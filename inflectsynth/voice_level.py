@@ -9,15 +9,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
-from importlib.resources.abc import Traversable
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import audiosig
 import numpy as np
 
 from .errors import InflectSynthError, InvalidSynthesisConfigError
+
+
+class _ReadableTextResource(Protocol):
+    """Minimal resource interface needed by the calibration loader."""
+
+    def read_text(self, encoding: str | None = None) -> str:
+        ...
+
 
 _SUPPORTED_SCHEMA = 1
 _SUPPORTED_METHOD = "bs1770"
@@ -298,7 +305,7 @@ def _parse_catalog(text: str, source: str) -> VoiceCalibrationCatalog:
     return _validate_catalog(raw)
 
 
-def load_voice_calibration(path: Path | str | Traversable) -> VoiceCalibrationCatalog:
+def load_voice_calibration(path: Path | str | _ReadableTextResource) -> VoiceCalibrationCatalog:
     """Load and strictly validate a JSON calibration catalog."""
     if isinstance(path, (str, Path)):
         source = Path(path)
