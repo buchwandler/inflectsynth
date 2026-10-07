@@ -1,22 +1,46 @@
-"""Inflect v2 ONNX synthesis frontend."""
+"""Inflect v2 prepared-text synthesis backed by ONNXVoice and InflectG2P."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
-from .catalog import list_models, load_catalog, resolve_model
+from .api_contract import REQUEST_API_VERSION, request_api_contract
+from .catalog import list_models
+from .config import SynthesisConfig
+from .discovery import DescribedVoice, DiscoveredModel, discover_models
 from .errors import (
     ArtifactIntegrityError,
+    CatalogDiscoveryError,
     CatalogError,
+    CatalogUnavailableError,
+    EmptyTextError,
     InflectSynthError,
+    InvalidSeedError,
+    InvalidSpeedError,
     InvalidSynthesisConfigError,
+    InvalidVariationError,
     InvalidVoiceError,
+    ModelInferenceError,
     ModelNotFoundError,
     OfflineModelError,
+    OnnxVoiceContractError,
     ProviderUnavailableError,
+    UnsupportedModelError,
 )
-from .install import install_model
-from .types import InstalledModel, ModelInfo, SynthesisResult, VoiceInfo
-from .voice import InflectVoice, boundary_pause_seconds, edge_fade, split_text
+from .identity import runtime_identity
+from .types import ModelInfo, SynthesisResult, VoiceInfo
+from .voice import InflectVoice
+from .voice_level import (
+    CalibrationDataError,
+    VoiceCalibrationCatalog,
+    VoiceCalibrationKey,
+    VoiceLevelApplication,
+    VoiceLevelCalibration,
+    VoiceLevelConfig,
+    VoiceLevelMode,
+    apply_voice_level_calibration,
+    default_voice_calibration,
+    load_voice_calibration,
+)
 
 try:
     __version__ = _distribution_version("inflectsynth")
@@ -25,24 +49,44 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
-    "ArtifactIntegrityError",
-    "CatalogError",
-    "InflectSynthError",
+    "REQUEST_API_VERSION",
+    "request_api_contract",
+    "runtime_identity",
+    "discover_models",
+    "DescribedVoice",
+    "DiscoveredModel",
     "InflectVoice",
-    "InstalledModel",
-    "InvalidSynthesisConfigError",
-    "InvalidVoiceError",
-    "ModelInfo",
-    "ModelNotFoundError",
-    "OfflineModelError",
-    "ProviderUnavailableError",
+    "SynthesisConfig",
     "SynthesisResult",
     "VoiceInfo",
-    "boundary_pause_seconds",
-    "edge_fade",
-    "install_model",
+    "VoiceLevelConfig",
+    "VoiceLevelMode",
+    "VoiceCalibrationKey",
+    "VoiceLevelCalibration",
+    "VoiceCalibrationCatalog",
+    "VoiceLevelApplication",
+    "CalibrationDataError",
+    "apply_voice_level_calibration",
+    "default_voice_calibration",
+    "load_voice_calibration",
+    "InflectSynthError",
+    "EmptyTextError",
+    "InvalidSpeedError",
+    "InvalidVariationError",
+    "InvalidSeedError",
+    "InvalidVoiceError",
+    "InvalidSynthesisConfigError",
+    "UnsupportedModelError",
+    "OnnxVoiceContractError",
+    "ModelInferenceError",
+    "CatalogDiscoveryError",
+    "CatalogUnavailableError",
+    # Transitional prototype aliases, not part of the v0.1.0 request contract.
     "list_models",
-    "load_catalog",
-    "resolve_model",
-    "split_text",
+    "ModelInfo",
+    "CatalogError",
+    "ModelNotFoundError",
+    "ArtifactIntegrityError",
+    "OfflineModelError",
+    "ProviderUnavailableError",
 ]

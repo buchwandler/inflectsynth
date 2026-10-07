@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "method": "bs1770",
+  "corpus": "inflectsynth-prepared-speech-v1",
+  "reference_lufs": -24.0,
+  "generated_with": {},
+  "voices": {}
+}

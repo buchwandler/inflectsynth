@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "inflectsynth-prepared-speech-v1",
+  "language": "en-US",
+  "stimuli": [
+    {
+      "id": "short",
+      "text": "A calm voice speaks clearly."
+    },
+    {
+      "id": "medium",
+      "text": "Please leave the package beside the front door while the morning is still quiet."
+    },
+    {
+      "id": "long",
+      "text": "A longer prepared sentence gives the synthesizer enough material to produce steady speech while we compare the relative level of the Inflect model under the same conditions."
+    }
+  ]
+}

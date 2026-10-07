@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--provider", default="cpu")
     parser.add_argument("--cache-dir")
-    parser.add_argument("--catalog-path")
+    parser.add_argument("--catalog-url")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--force-download", action="store_true")
     parser.add_argument("--list-models", action="store_true")
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.list_models:
-        for model in list_models(catalog_path=args.catalog_path):
+        for model in list_models(catalog_url=args.catalog_url):
             print(f"{model.id}\t{model.name}\tvoices={','.join(v.id for v in model.voices)}")
         return 0
     if not args.text:
@@ -35,7 +35,7 @@ def main() -> int:
     with InflectVoice.from_pretrained(
         args.model,
         cache_dir=args.cache_dir,
-        catalog_path=args.catalog_path,
+        catalog_url=args.catalog_url,
         offline=args.offline,
         force_download=args.force_download,
         providers=args.provider,

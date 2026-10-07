@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "name": "inflectsynth-calibrated-verification-v1",
+  "reference_lufs": -24.0,
+  "max_post_calibration_abs_error_lu": 0.5,
+  "max_post_calibration_peak_dbfs": -1.0,
+  "models": ["nano-v2", "micro-v2"],
+  "voices": ["default"],
+  "seeds": [0, 1, 2]
+}
