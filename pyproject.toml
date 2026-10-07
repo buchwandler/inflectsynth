@@ -1,0 +1,82 @@
+[build-system]
+requires = [
+  "setuptools>=80",
+  "setuptools-scm[simple]>=9.2",
+  "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inflectsynth"
+dynamic = ["version"]
+description = "Inflect v2 ONNX synthesis frontend backed by inflectg2p"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "inflectsynth contributors"}]
+keywords = ["tts", "inflect", "onnx", "onnxruntime", "speech"]
+dependencies = [
+  "numpy>=1.26,<3",
+  "platformdirs>=4,<5",
+  "inflectg2p>=0.1.dev0,<0.2",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+[project.optional-dependencies]
+cpu = ["onnxruntime>=1.20,<2"]
+gpu = ["onnxruntime-gpu>=1.20,<2"]
+directml = ["onnxruntime-directml>=1.20,<2"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.16,<0.17",
+  "mypy>=1.11",
+  "build>=1",
+  "twine>=5",
+  "packaging>=24",
+]
+
+[project.urls]
+Repository = "https://github.com/buchwandler/inflectsynth"
+Homepage = "https://github.com/buchwandler/inflectsynth"
+
+[project.scripts]
+inflectsynth = "inflectsynth.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["inflectsynth*"]
+
+[tool.setuptools.package-data]
+inflectsynth = ["py.typed", "data/*.json"]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.dev0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["inflectsynth"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true

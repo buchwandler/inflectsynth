@@ -1,0 +1,7 @@
+inflectsynth
+
+This project contains an independently packaged derivative of the public Inflect v2 ONNX
+inference contract released by Owen Song under Apache-2.0.
+
+The model weights are not included in this source distribution. Downloaded model artifacts retain
+their upstream Apache-2.0 license and provenance. Third-party dependencies retain their licenses.
