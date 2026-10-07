@@ -1,19 +1,49 @@
-name: test
-on: [push, pull_request]
+name: CI
+
+on:
+  push:
+  pull_request:
+
 permissions:
   contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e ../inflectg2p
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest
-      - run: python -m ruff check inflectsynth tests
+      - name: Install project and development tools
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest
+      - name: Check lint
+        run: python -m ruff check inflectsynth tests benchmarks examples
+      - name: Check types
+        run: python -m mypy inflectsynth
+      - name: Compile sources and examples
+        run: python -m compileall -q inflectsynth tests benchmarks examples
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install project and packaging tools
+        run: python -m pip install -e ".[dev]"
+      - name: Build sdist and wheel
+        run: |
+          rm -rf dist build
+          python -m build --sdist --wheel
+      - name: Validate artifacts
+        run: python -m twine check dist/*

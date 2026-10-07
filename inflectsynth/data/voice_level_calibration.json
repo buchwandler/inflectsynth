@@ -1,8 +1,32 @@
 {
-  "schema": 1,
-  "method": "bs1770",
   "corpus": "inflectsynth-prepared-speech-v1",
+  "generated_with": {
+    "audiosig": "0.1.6",
+    "inflectg2p": "0.1.0",
+    "inflectsynth": "0.1.dev2+gaed518a21",
+    "onnxvoice": "0.2.5"
+  },
+  "method": "bs1770",
   "reference_lufs": -24.0,
-  "generated_with": {},
-  "voices": {}
+  "schema": 1,
+  "voices": {
+    "inflect:micro-v2:default": {
+      "corpus_version": "inflectsynth-prepared-speech-v1",
+      "gain_db": -0.3353773192815517,
+      "mad_lu": 0.28835105130528405,
+      "measured_lufs": -23.66462268071845,
+      "method": "bs1770",
+      "reference_lufs": -24.0,
+      "samples": 9
+    },
+    "inflect:nano-v2:default": {
+      "corpus_version": "inflectsynth-prepared-speech-v1",
+      "gain_db": -0.042377569773361046,
+      "mad_lu": 0.2913390390127759,
+      "measured_lufs": -23.95762243022664,
+      "method": "bs1770",
+      "reference_lufs": -24.0,
+      "samples": 9
+    }
+  }
 }

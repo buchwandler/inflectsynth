@@ -75,9 +75,34 @@ with InflectVoice.from_local(
     result = tts.synthesize("Local inference.")
 ```
 
+## Voice-level calibration
+
+InflectSynth ships measured BS.1770 static-gain calibration for both managed v2 models. Calibration is **opt-in**; the default mode remains `off`, so existing synthesis returns the raw model level.
+
+```python
+from inflectsynth import InflectVoice, SynthesisConfig, VoiceLevelConfig
+
+config = SynthesisConfig(
+    voice_level=VoiceLevelConfig(mode="calibrated"),
+)
+
+with InflectVoice.from_pretrained("nano-v2", providers="cpu") as tts:
+    result = tts.synthesize(
+        "Use the packaged voice-level calibration.",
+        config=config,
+    )
+```
+
+The v0.1.0 calibration catalog contains:
+
+- `inflect:nano-v2:default`: `-0.0423775698 dB`
+- `inflect:micro-v2:default`: `-0.3353773193 dB`
+
+Both records target `-24.0 LUFS` using the `inflectsynth-prepared-speech-v1` corpus and nine measurements per model (three prepared-speech stimuli × three seeds). The applied gain and catalog revision are reported under `result.metadata["voice_level"]`. Local/unmanaged graphs do not receive a managed calibration identity automatically.
+
 ## Catalog
 
-A bootstrap copy of the catalog is packaged for out-of-box use. For sibling-repository testing or a separately updated catalog, pass `catalog_url="../inflect-onnx-bundles/catalog/models.json"` to `InflectVoice.from_pretrained()` or the corresponding discovery API. The authoritative catalog repo is intentionally not a Python package.
+Catalog discovery is delegated to ONNXVoice. Its Inflect adapter uses the authoritative `inflect-onnx-bundles` catalog source and cache; InflectSynth does not package a second model catalog. For sibling-repository testing or a separately updated catalog, pass `catalog_url="../inflect-onnx-bundles/catalog/models.json"` to `InflectVoice.from_pretrained()` or the corresponding discovery API. The authoritative catalog repo is intentionally not a Python package.
 
 ## Runtime ownership
 

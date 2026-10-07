@@ -1,0 +1,79 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable vX.Y.Z tag, got: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Install release tools
+        run: python -m pip install build twine packaging
+      - name: Build release distributions
+        run: |
+          rm -rf dist build
+          python -m build --sdist --wheel
+      - name: Validate artifacts
+        run: |
+          python -m twine check dist/*
+          python - <<'PY'
+          from pathlib import Path
+          from packaging.utils import parse_sdist_filename, parse_wheel_filename
+
+          expected = "${{ steps.tag.outputs.version }}"
+          artifacts = sorted(Path("dist").iterdir())
+          if len(artifacts) != 2:
+              raise SystemExit(f"Expected exactly an sdist and wheel, found: {artifacts}")
+
+          versions = set()
+          for artifact in artifacts:
+              if artifact.name.endswith(".whl"):
+                  name, version, _, _ = parse_wheel_filename(artifact.name)
+              elif artifact.name.endswith(".tar.gz"):
+                  name, version = parse_sdist_filename(artifact.name)
+              else:
+                  raise SystemExit(f"Unexpected release artifact: {artifact.name}")
+              if str(name) != "inflectsynth":
+                  raise SystemExit(f"Unexpected distribution name: {name}")
+              versions.add(str(version))
+
+          if versions != {expected}:
+              raise SystemExit(f"Expected version {expected}, found: {sorted(versions)}")
+          PY
+      - name: Upload exact release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: inflectsynth-${{ steps.tag.outputs.version }}-dist
+          path: dist/*
+          if-no-files-found: error
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          attestations: false
