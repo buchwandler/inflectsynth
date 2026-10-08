@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import operator
+from collections.abc import MutableMapping
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -18,6 +20,7 @@ from inflectsynth.errors import (
     InvalidVariationError,
     InvalidVoiceError,
     ModelInferenceError,
+    TextPreparationError,
 )
 
 
@@ -145,7 +148,7 @@ def test_config_is_authoritative_and_result_metadata_is_immutable() -> None:
     )
     assert runtime.calls[0][1] == {"speed": 0.75, "variation": 0.25, "seed": 4}
     with pytest.raises(TypeError):
-        result.metadata["changed"] = True  # type: ignore[index]
+        operator.setitem(cast(MutableMapping[str, Any], result.metadata), "changed", True)
 
 
 def test_prepared_text_is_not_whitespace_collapsed() -> None:
@@ -239,7 +242,7 @@ def test_g2p_failures_are_translated_before_runtime_inference(
         raise RuntimeError("phonemizer detail")
 
     monkeypatch.setattr(g2p, "phonemize_prepared", fail)
-    with pytest.raises(ModelInferenceError) as caught:
+    with pytest.raises(TextPreparationError) as caught:
         voice.synthesize_prepared("Hello.")
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert runtime.calls == []

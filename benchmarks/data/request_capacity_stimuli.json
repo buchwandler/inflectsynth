@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "inflectsynth-request-capacity-v1",
+  "language": "en-US",
+  "phrases": [
+    "Hi",
+    "Hello",
+    "Good morning",
+    "The sun is up",
+    "A bird sings",
+    "The garden is quiet",
+    "A friendly neighbor carries a small parcel",
+    "A thoughtful traveler studies the map before departure"
+  ]
+}

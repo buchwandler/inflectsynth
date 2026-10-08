@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "corpus": "inflectsynth-request-capacity-v1",
+  "models": ["nano-v2", "micro-v2"],
+  "target_token_counts": [10, 20, 30, 40, 50, 75, 100, 150, 200, 300, 400],
+  "semantic_shapes": ["one_sentence", "multiple_sentences"],
+  "seeds": [0, 1, 2],
+  "speed": 1.0,
+  "variation": 0.667,
+  "sample_rate": 24000,
+  "max_audio_seconds": 120.0
+}

@@ -22,8 +22,7 @@ from .errors import InflectSynthError, InvalidSynthesisConfigError
 class _ReadableTextResource(Protocol):
     """Minimal resource interface needed by the calibration loader."""
 
-    def read_text(self, encoding: str | None = None) -> str:
-        ...
+    def read_text(self, encoding: str | None = None) -> str: ...
 
 
 _SUPPORTED_SCHEMA = 1

@@ -6,6 +6,29 @@ class EmptyTextError(InflectSynthError, ValueError):
     """The prepared synthesis text is empty or has the wrong type."""
 
 
+class TextPreparationError(InflectSynthError, RuntimeError):
+    """Prepared text could not be converted into model-ready Inflect token IDs."""
+
+
+class SynthesisInputTooLongError(InflectSynthError, ValueError):
+    """Prepared input exceeds the supported InflectSynth request budget."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        token_count: int,
+        max_tokens: int,
+        text_length: int,
+        model_id: str,
+    ) -> None:
+        super().__init__(message)
+        self.token_count = token_count
+        self.max_tokens = max_tokens
+        self.text_length = text_length
+        self.model_id = model_id
+
+
 class InvalidSynthesisConfigError(InflectSynthError, ValueError):
     """The synthesis configuration has an invalid shape or value."""
 

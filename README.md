@@ -23,9 +23,9 @@ python -m pip install "inflectsynth[directml]"
 ## Python
 
 ```python
-from inflectsynth import InflectVoice
+from inflectsynth import DEFAULT_MODEL, InflectVoice
 
-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as tts:
+with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
     result = tts.synthesize(
         "A small voice can still have something meaningful to say.",
         speed=1.0,
@@ -62,6 +62,32 @@ The public upstream ranges are preserved:
 
 A call processes one input through one frontend/runtime request. InflectSynth does not currently implement the official runner's long-text wrapper behavior: punctuation-aware chunking, per-chunk pauses/noise, concatenation, or edge fades.
 
+## Atomic request ownership
+
+One `InflectVoice.synthesize_prepared()` call processes one exact prepared-text request. The caller owns text boundaries, subdivision, and any composition of child requests. InflectSynth does not split or concatenate long text, add pauses, or perform sentence segmentation.
+
+## Request capacity and token measurement
+
+`InflectVoice.measure_prepared()` runs the same InflectG2P prepared-text frontend used by synthesis and reports the actual model-token count without acoustic inference:
+
+```python
+from inflectsynth import DEFAULT_MODEL, InflectVoice
+
+with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
+    measure = tts.measure_prepared("The exact prepared text to send.")
+    print(measure.amount, measure.unit, measure.maximum, measure.fits)
+```
+
+This release does not publish a supported maximum. Measurements therefore report the token `amount`, with `maximum=None` and `fits=None`; callers must not infer a supported limit from the count alone, model name, or an ONNX graph. A local or unmanaged model also reports unknown capacity unless a future explicit policy is supplied.
+
+If a future release ships a validated model-specific capacity policy, `maximum` will be a **supported safe request budget** and `fits` will state whether the measured request is within that budget. Such a budget is not an ONNX graph maximum unless authoritative runtime evidence establishes that distinction. Capacity guidance is also separate from speech-quality guidance: passing a supported budget does not guarantee a particular perceptual quality, and quality may degrade gradually rather than at a hard graph boundary.
+
+For debugging, the optional CLI measurement command prints the same fields as JSON and does not synthesize audio:
+
+```bash
+python -m inflectsynth --measure "The exact prepared text to send."
+```
+
 ## Local graphs
 
 ```python
@@ -80,13 +106,13 @@ with InflectVoice.from_local(
 InflectSynth ships measured BS.1770 static-gain calibration for both managed v2 models. Calibration is **opt-in**; the default mode remains `off`, so existing synthesis returns the raw model level.
 
 ```python
-from inflectsynth import InflectVoice, SynthesisConfig, VoiceLevelConfig
+from inflectsynth import DEFAULT_MODEL, InflectVoice, SynthesisConfig, VoiceLevelConfig
 
 config = SynthesisConfig(
     voice_level=VoiceLevelConfig(mode="calibrated"),
 )
 
-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as tts:
+with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
     result = tts.synthesize(
         "Use the packaged voice-level calibration.",
         config=config,

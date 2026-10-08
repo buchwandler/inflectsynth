@@ -26,4 +26,26 @@ def request_api_contract() -> Mapping[str, str | bool]:
     return _REQUEST_API_CONTRACT
 
 
-__all__ = ["REQUEST_API_VERSION", "request_api_contract"]
+CAPACITY_API_VERSION = 1
+
+_CAPACITY_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
+    {
+        "entrypoint": "InflectVoice.measure_prepared",
+        "unit": "model_tokens",
+        "supports_known_maximum": False,
+        "caller_owns_text_boundaries": True,
+    }
+)
+
+
+def capacity_api_contract() -> Mapping[str, str | bool]:
+    """Return the immutable capacity API declaration without model access."""
+    return _CAPACITY_API_CONTRACT
+
+
+__all__ = [
+    "REQUEST_API_VERSION",
+    "request_api_contract",
+    "CAPACITY_API_VERSION",
+    "capacity_api_contract",
+]

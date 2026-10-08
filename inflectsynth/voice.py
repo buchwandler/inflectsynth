@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from numbers import Integral
 from pathlib import Path
 from typing import Any
@@ -17,21 +17,30 @@ from ._onnxvoice import (
     open_local_model,
 )
 from .config import SynthesisConfig
+from .constants import DEFAULT_MODEL, DEFAULT_VOICE, SAMPLE_RATE
 from .errors import (
     EmptyTextError,
     InflectSynthError,
     InvalidSynthesisConfigError,
     InvalidVoiceError,
     ModelInferenceError,
+    SynthesisInputTooLongError,
+    TextPreparationError,
 )
-from .types import SynthesisResult, VoiceInfo
+from .types import RequestMeasure, SynthesisResult, VoiceInfo
 from .voice_level import (
     VoiceCalibrationKey,
     VoiceLevelApplication,
     apply_voice_level_calibration,
 )
 
-SAMPLE_RATE = 24_000
+
+@dataclass(frozen=True, slots=True)
+class _PreparedText:
+    source_text: str
+    normalized_text: str
+    phonemes: str
+    token_ids: tuple[int, ...]
 
 
 class InflectVoice:
@@ -55,10 +64,43 @@ class InflectVoice:
         self._closed = False
         self._last_voice_level_application: VoiceLevelApplication | None = None
 
+    def _prepare_text(self, text: str) -> _PreparedText:
+        if self._closed:
+            raise RuntimeError("InflectVoice is closed")
+        if not isinstance(text, str) or not text.strip():
+            raise EmptyTextError("prepared text must be a non-empty string")
+        try:
+            frontend = self.g2p.phonemize_prepared(text)
+            return _PreparedText(
+                source_text=text,
+                normalized_text=frontend.text,
+                phonemes=frontend.phonemes,
+                token_ids=tuple(frontend.token_ids),
+            )
+        except InflectSynthError:
+            raise
+        except Exception as exc:
+            raise TextPreparationError("InflectG2P failed to phonemize prepared text") from exc
+
+    def _maximum_input_tokens(self) -> int | None:
+        """Return a validated model budget, or None when capacity is unknown."""
+        return None
+
+    def measure_prepared(self, text: str) -> RequestMeasure:
+        """Measure the exact model tokens produced for one prepared request."""
+        prepared = self._prepare_text(text)
+        maximum = self._maximum_input_tokens()
+        return RequestMeasure(
+            fits=(len(prepared.token_ids) <= maximum) if maximum is not None else None,
+            amount=len(prepared.token_ids),
+            maximum=maximum,
+            model_id=self.model_id,
+        )
+
     @classmethod
     def from_pretrained(
         cls,
-        model: str = "nano-v2",
+        model: str = DEFAULT_MODEL,
         *,
         cache_dir: str | Path | None = None,
         offline: bool = False,
@@ -106,10 +148,10 @@ class InflectVoice:
         metadata = {
             "id": model_id,
             "sample_rate": SAMPLE_RATE,
-            "default_voice": "default",
+            "default_voice": DEFAULT_VOICE,
             "voices": {
-                "default": {
-                    "id": "default",
+                DEFAULT_VOICE: {
+                    "id": DEFAULT_VOICE,
                     "name": "Default",
                     "language": "en-US",
                     "locale": "en-US",
@@ -137,8 +179,8 @@ class InflectVoice:
 
     @property
     def available_voices(self) -> tuple[str, ...]:
-        voices = self.metadata.get("voices", {"default": {}})
-        return tuple(voices) if isinstance(voices, Mapping) else ("default",)
+        voices = self.metadata.get("voices", {DEFAULT_VOICE: {}})
+        return tuple(voices) if isinstance(voices, Mapping) else (DEFAULT_VOICE,)
 
     @property
     def voices(self) -> tuple[VoiceInfo, ...]:
@@ -172,7 +214,7 @@ class InflectVoice:
         self,
         text: str,
         *,
-        voice: str = "default",
+        voice: str = DEFAULT_VOICE,
         speed: float = 1.0,
         variation: float = 0.667,
         seed: int = 0,
@@ -184,7 +226,7 @@ class InflectVoice:
             raise EmptyTextError("prepared text must be a non-empty string")
         if voice not in self.available_voices:
             raise InvalidVoiceError(
-                "Inflect v2 base releases contain one fixed voice; voice must be 'default'"
+                f"Inflect v2 base releases contain one fixed voice; voice must be {DEFAULT_VOICE!r}"
             )
         if config is not None and not isinstance(config, SynthesisConfig):
             raise InvalidSynthesisConfigError("config must be a SynthesisConfig")
@@ -194,15 +236,24 @@ class InflectVoice:
             else SynthesisConfig(speed=speed, variation=variation, seed=seed).validated()
         )
 
-        try:
-            frontend = self.g2p.phonemize_prepared(text)
-        except InflectSynthError:
-            raise
-        except Exception as exc:
-            raise ModelInferenceError("InflectG2P failed to phonemize prepared text") from exc
+        prepared = self._prepare_text(text)
+        maximum = self._maximum_input_tokens()
+        token_count = len(prepared.token_ids)
+        if maximum is not None and token_count > maximum:
+            raise SynthesisInputTooLongError(
+                (
+                    f"Inflect prepared request uses {token_count} model tokens; "
+                    f"maximum is {maximum} for {self.model_id!r}"
+                ),
+                token_count=token_count,
+                max_tokens=maximum,
+                text_length=len(text),
+                model_id=self.model_id,
+            )
+
         try:
             inference = self.runtime.infer(
-                frontend.token_ids,
+                prepared.token_ids,
                 speed=synthesis_config.speed,
                 variation=synthesis_config.variation,
                 seed=synthesis_config.seed,
@@ -252,9 +303,9 @@ class InflectVoice:
             seed=synthesis_config.seed,
             model_ref=self.model_ref,
             metadata={
-                "normalized_text": frontend.text,
-                "phoneme_text": frontend.phonemes,
-                "token_count": len(frontend.token_ids),
+                "normalized_text": prepared.normalized_text,
+                "phoneme_text": prepared.phonemes,
+                "token_count": token_count,
                 "model_id": self.model_id,
                 "revision": revision,
                 "voice_level": {

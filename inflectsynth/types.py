@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from numbers import Integral
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -40,6 +40,33 @@ class ModelInfo:
     default_voice: str
     voices: tuple[VoiceInfo, ...]
     revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class RequestMeasure:
+    """Capacity measurement for one exact prepared-text request."""
+
+    fits: bool | None
+    amount: int
+    maximum: int | None
+    unit: Literal["model_tokens"] = "model_tokens"
+    source: str = "inflectsynth.frontend"
+    model_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.amount) is not int or self.amount < 0:
+            raise ValueError("amount must be a non-negative Python integer")
+        if self.maximum is not None and (type(self.maximum) is not int or self.maximum <= 0):
+            raise ValueError("maximum must be None or a positive Python integer")
+        if self.fits is not None and type(self.fits) is not bool:
+            raise ValueError("fits must be True, False, or None")
+        if self.unit != "model_tokens":
+            raise ValueError("unit must be 'model_tokens'")
+        if self.maximum is None:
+            if self.fits is not None:
+                raise ValueError("fits must be None when maximum is unknown")
+        elif self.fits != (self.amount <= self.maximum):
+            raise ValueError("fits must match amount <= maximum")
 
 
 @dataclass(frozen=True, slots=True)
