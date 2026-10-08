@@ -1,0 +1,2093 @@
+ README.md                                     |  34 ++-
+ benchmarks/data/request_capacity_policy.json  |  12 +
+ benchmarks/data/request_capacity_stimuli.json |  15 +
+ benchmarks/promote_request_capacity.py        | 329 ++++++++++++++++++++
+ benchmarks/request_capacity_benchmark.py      | 425 ++++++++++++++++++++++++++
+ examples/all_models.py                        |   4 +-
+ examples/basic.py                             |   4 +-
+ examples/calibrated.py                        |   4 +-
+ inflectsynth/__init__.py                      |  20 +-
+ inflectsynth/__main__.py                      |  53 +++-
+ inflectsynth/api_contract.py                  |  24 +-
+ inflectsynth/constants.py                     |   7 +
+ inflectsynth/errors.py                        |  23 ++
+ inflectsynth/types.py                         |  29 +-
+ inflectsynth/voice.py                         |  93 ++++--
+ inflectsynth/voice_level.py                   |   3 +-
+ tests/test_cli.py                             |  68 +++++
+ tests/test_promote_request_capacity.py        | 141 +++++++++
+ tests/test_public_api.py                      |  25 ++
+ tests/test_request_api_contract.py            |  31 +-
+ tests/test_request_capacity_benchmark.py      | 117 +++++++
+ tests/test_request_measurement.py             | 199 ++++++++++++
+ tests/test_voice_contract.py                  |   9 +-
+ 23 files changed, 1620 insertions(+), 49 deletions(-)
+
+diff --git a/README.md b/README.md
+index 02b7005..8549d89 100644
+--- a/README.md
++++ b/README.md
+@@ -23,9 +23,9 @@ python -m pip install "inflectsynth[directml]"
+ ## Python
+
+ ```python
+-from inflectsynth import InflectVoice
++from inflectsynth import DEFAULT_MODEL, InflectVoice
+
+-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as tts:
++with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
+     result = tts.synthesize(
+         "A small voice can still have something meaningful to say.",
+         speed=1.0,
+@@ -62,6 +62,32 @@ The public upstream ranges are preserved:
+
+ A call processes one input through one frontend/runtime request. InflectSynth does not currently implement the official runner's long-text wrapper behavior: punctuation-aware chunking, per-chunk pauses/noise, concatenation, or edge fades.
+
++## Atomic request ownership
++
++One `InflectVoice.synthesize_prepared()` call processes one exact prepared-text request. The caller owns text boundaries, subdivision, and any composition of child requests. InflectSynth does not split or concatenate long text, add pauses, or perform sentence segmentation.
++
++## Request capacity and token measurement
++
++`InflectVoice.measure_prepared()` runs the same InflectG2P prepared-text frontend used by synthesis and reports the actual model-token count without acoustic inference:
++
++```python
++from inflectsynth import DEFAULT_MODEL, InflectVoice
++
++with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
++    measure = tts.measure_prepared("The exact prepared text to send.")
++    print(measure.amount, measure.unit, measure.maximum, measure.fits)
++```
++
++This release does not publish a supported maximum. Measurements therefore report the token `amount`, with `maximum=None` and `fits=None`; callers must not infer a supported limit from the count alone, model name, or an ONNX graph. A local or unmanaged model also reports unknown capacity unless a future explicit policy is supplied.
++
++If a future release ships a validated model-specific capacity policy, `maximum` will be a **supported safe request budget** and `fits` will state whether the measured request is within that budget. Such a budget is not an ONNX graph maximum unless authoritative runtime evidence establishes that distinction. Capacity guidance is also separate from speech-quality guidance: passing a supported budget does not guarantee a particular perceptual quality, and quality may degrade gradually rather than at a hard graph boundary.
++
++For debugging, the optional CLI measurement command prints the same fields as JSON and does not synthesize audio:
++
++```bash
++python -m inflectsynth --measure "The exact prepared text to send."
++```
++
+ ## Local graphs
+
+ ```python
+@@ -80,13 +106,13 @@ with InflectVoice.from_local(
+ InflectSynth ships measured BS.1770 static-gain calibration for both managed v2 models. Calibration is **opt-in**; the default mode remains `off`, so existing synthesis returns the raw model level.
+
+ ```python
+-from inflectsynth import InflectVoice, SynthesisConfig, VoiceLevelConfig
++from inflectsynth import DEFAULT_MODEL, InflectVoice, SynthesisConfig, VoiceLevelConfig
+
+ config = SynthesisConfig(
+     voice_level=VoiceLevelConfig(mode="calibrated"),
+ )
+
+-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as tts:
++with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
+     result = tts.synthesize(
+         "Use the packaged voice-level calibration.",
+         config=config,
+diff --git a/benchmarks/data/request_capacity_policy.json b/benchmarks/data/request_capacity_policy.json
+new file mode 100644
+index 0000000..5ee2b40
+--- /dev/null
++++ b/benchmarks/data/request_capacity_policy.json
+@@ -0,0 +1,12 @@
++{
++  "schema": 1,
++  "corpus": "inflectsynth-request-capacity-v1",
++  "models": ["nano-v2", "micro-v2"],
++  "target_token_counts": [10, 20, 30, 40, 50, 75, 100, 150, 200, 300, 400],
++  "semantic_shapes": ["one_sentence", "multiple_sentences"],
++  "seeds": [0, 1, 2],
++  "speed": 1.0,
++  "variation": 0.667,
++  "sample_rate": 24000,
++  "max_audio_seconds": 120.0
++}
+diff --git a/benchmarks/data/request_capacity_stimuli.json b/benchmarks/data/request_capacity_stimuli.json
+new file mode 100644
+index 0000000..216bf3c
+--- /dev/null
++++ b/benchmarks/data/request_capacity_stimuli.json
+@@ -0,0 +1,15 @@
++{
++  "schema": 1,
++  "name": "inflectsynth-request-capacity-v1",
++  "language": "en-US",
++  "phrases": [
++    "Hi",
++    "Hello",
++    "Good morning",
++    "The sun is up",
++    "A bird sings",
++    "The garden is quiet",
++    "A friendly neighbor carries a small parcel",
++    "A thoughtful traveler studies the map before departure"
++  ]
++}
+diff --git a/benchmarks/promote_request_capacity.py b/benchmarks/promote_request_capacity.py
+new file mode 100644
+index 0000000..0848905
+--- /dev/null
++++ b/benchmarks/promote_request_capacity.py
+@@ -0,0 +1,329 @@
++#!/usr/bin/env python3
++"""Validate real request-capacity evidence and write a candidate policy only."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import math
++from collections.abc import Mapping, Sequence
++from pathlib import Path
++from typing import Any
++
++from . import request_capacity_benchmark as benchmark
++
++PRODUCTION_POLICY = (
++    Path(__file__).resolve().parents[1] / "inflectsynth" / "data" / "request_capacity.json"
++)
++DEFAULT_REPORT = Path("benchmarks/output/request_capacity/report.json")
++DEFAULT_OUTPUT = Path("benchmarks/output/request_capacity/candidate_policy.json")
++_RUNTIME_IDENTITY_FIELDS = {
++    "engine",
++    "engine_version",
++    "g2p_revision",
++    "runtime_revision",
++    "request_api_version",
++}
++
++
++def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"duplicate JSON object key: {key!r}")
++        result[key] = value
++    return result
++
++
++def _canonical_sha256(value: Any) -> str:
++    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
++    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
++
++
++def _finite(value: Any, name: str) -> float:
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise ValueError(f"{name} must be finite")
++    result = float(value)
++    if not math.isfinite(result):
++        raise ValueError(f"{name} must be finite")
++    return result
++
++
++def _validate_provenance(
++    report: Mapping[str, Any], expected_models: Sequence[str]
++) -> list[Mapping[str, Any]]:
++    generated_with = report.get("generated_with")
++    required_versions = {"inflectsynth", "inflectg2p", "onnxvoice"}
++    if (
++        not isinstance(generated_with, Mapping)
++        or set(generated_with) != required_versions
++        or any(
++            not isinstance(value, str) or not value.strip() or value == "unknown"
++            for value in generated_with.values()
++        )
++    ):
++        raise ValueError("report package-version provenance is incomplete")
++    environment = report.get("environment")
++    if (
++        not isinstance(environment, Mapping)
++        or set(environment) != {"python_version", "platform"}
++        or any(not isinstance(value, str) or not value for value in environment.values())
++    ):
++        raise ValueError("report execution environment provenance is incomplete")
++    if "android" in environment["platform"].casefold():
++        raise ValueError("unsupported Android runtime cannot promote a production capacity policy")
++    runtime = report.get("runtime_identity")
++    if (
++        not isinstance(runtime, Mapping)
++        or set(runtime) != _RUNTIME_IDENTITY_FIELDS
++        or runtime.get("engine") != "inflect"
++        or any(
++            not isinstance(runtime.get(key), str) or not runtime[key]
++            for key in _RUNTIME_IDENTITY_FIELDS
++        )
++    ):
++        raise ValueError("report runtime identity is incomplete")
++    models = report.get("models")
++    if not isinstance(models, list) or len(models) != len(expected_models):
++        raise ValueError("report must include provenance for both canonical models")
++    by_id: dict[str, Mapping[str, Any]] = {}
++    for model in models:
++        if not isinstance(model, Mapping):
++            raise ValueError("model provenance records must be objects")
++        model_id = model.get("model_id")
++        if model_id not in expected_models or model_id in by_id:
++            raise ValueError(f"model IDs must be canonical and unique: {model_id!r}")
++        if model.get("model_ref") != f"inflect:{model_id}":
++            raise ValueError(f"model {model_id!r} has an invalid managed model reference")
++        revision = model.get("source_revision")
++        if not isinstance(revision, str) or not revision.strip():
++            raise ValueError(f"model {model_id!r} has no source revision")
++        artifacts = model.get("artifacts")
++        if not isinstance(artifacts, Mapping) or set(artifacts) != {"duration", "decode"}:
++            raise ValueError(f"model {model_id!r} artifact provenance is incomplete")
++        for name, artifact in artifacts.items():
++            if not isinstance(artifact, Mapping):
++                raise ValueError(f"model {model_id!r} {name} artifact record is invalid")
++            size = artifact.get("bytes")
++            digest = artifact.get("sha256")
++            if type(size) is not int or size <= 0:
++                raise ValueError(f"model {model_id!r} {name} artifact size is invalid")
++            if (
++                not isinstance(digest, str)
++                or len(digest) != 64
++                or any(c not in "0123456789abcdef" for c in digest)
++            ):
++                raise ValueError(f"model {model_id!r} {name} artifact digest is invalid")
++        by_id[model_id] = model
++    if set(by_id) != set(expected_models):
++        raise ValueError("report model provenance does not cover both canonical models")
++    return [by_id[model_id] for model_id in expected_models]
++
++
++def validate_report(
++    report: Mapping[str, Any],
++    *,
++    policy: Mapping[str, Any] | None = None,
++    stimuli: Mapping[str, Any] | None = None,
++) -> tuple[Mapping[str, Any], list[Mapping[str, Any]], list[Mapping[str, Any]]]:
++    policy = dict(policy or benchmark.load_policy())
++    stimuli = dict(stimuli or benchmark.load_stimuli())
++    if report.get("schema") != 1 or isinstance(report.get("schema"), bool):
++        raise ValueError("unsupported request-capacity report schema")
++    if report.get("unit") != "model_tokens":
++        raise ValueError("report unit must be model_tokens")
++    if report.get("corpus") != policy["corpus"] or report.get("policy") != policy:
++        raise ValueError("report does not match the checked-in request-capacity policy")
++    if report.get("stimuli") != stimuli:
++        raise ValueError("report stimuli differ from the checked-in characterization corpus")
++    model_provenance = _validate_provenance(report, policy["models"])
++    if report.get("model_open_failures") != []:
++        raise ValueError("report contains model-open failures")
++    coverage = report.get("coverage")
++    if not isinstance(coverage, Mapping) or coverage.get("complete") is not True:
++        raise ValueError("report coverage is incomplete")
++    expected = len(policy["models"]) * len(policy["semantic_shapes"])
++    expected *= len(policy["target_token_counts"]) * len(policy["seeds"])
++    samples = report.get("samples")
++    if not isinstance(samples, list) or len(samples) != expected:
++        raise ValueError("report sample count does not cover the required matrix")
++    if (
++        coverage.get("models_expected") != len(policy["models"])
++        or coverage.get("models_opened") != len(policy["models"])
++        or coverage.get("samples_expected") != expected
++        or coverage.get("samples_recorded") != expected
++        or coverage.get("synthesis_failures") != 0
++    ):
++        raise ValueError("report coverage counts do not match the complete matrix")
++
++    keys: set[tuple[str, str, int, int]] = set()
++    normalized_samples: list[Mapping[str, Any]] = []
++    for row in samples:
++        if not isinstance(row, Mapping):
++            raise ValueError("sample rows must be objects")
++        model_id = row.get("model")
++        shape = row.get("semantic_shape")
++        target = row.get("target_token_count")
++        seed = row.get("seed")
++        if model_id not in policy["models"]:
++            raise ValueError(f"sample has a non-canonical model ID: {model_id!r}")
++        if shape not in policy["semantic_shapes"] or target not in policy["target_token_counts"]:
++            raise ValueError("sample references an unknown shape or target token neighborhood")
++        if type(seed) is not int or seed not in policy["seeds"]:
++            raise ValueError("sample seed is outside the declared deterministic seed set")
++        key = (model_id, shape, target, seed)
++        if key in keys:
++            raise ValueError(f"duplicate request-capacity sample: {key}")
++        keys.add(key)
++        if row.get("synthesis_success") is not True or row.get("exception_type") is not None:
++            raise ValueError(f"required sample {key} failed synthesis")
++        token_count = row.get("token_count")
++        if type(token_count) is not int or token_count <= 0:
++            raise ValueError(f"sample {key} has an invalid model-token count")
++        for field in ("source_text_length", "normalized_text_length", "audio_samples"):
++            if type(row.get(field)) is not int or row[field] <= 0:
++                raise ValueError(f"sample {key} has invalid {field}")
++        if row.get("speed") != policy["speed"] or row.get("variation") != policy["variation"]:
++            raise ValueError(f"sample {key} used unexpected synthesis controls")
++        if row.get("sample_rate") != policy["sample_rate"] or isinstance(
++            row.get("sample_rate"), bool
++        ):
++            raise ValueError(f"sample {key} has an unexpected sample rate")
++        if row.get("finite_pcm") is not True:
++            raise ValueError(f"sample {key} PCM is not finite")
++        audio_seconds = _finite(row.get("audio_seconds"), f"{key}.audio_seconds")
++        if audio_seconds <= 0 or audio_seconds > float(policy["max_audio_seconds"]):
++            raise ValueError(f"sample {key} has an implausible output duration")
++        if _finite(row.get("real_seconds"), f"{key}.real_seconds") < 0:
++            raise ValueError(f"sample {key} has invalid runtime duration")
++        if _finite(row.get("xrt"), f"{key}.xrt") <= 0:
++            raise ValueError(f"sample {key} has invalid real-time factor")
++        if _finite(row.get("peak_abs"), f"{key}.peak_abs") < 0:
++            raise ValueError(f"sample {key} has invalid PCM peak")
++        normalized_samples.append(row)
++    if len(keys) != expected:
++        raise ValueError("report does not cover every model/shape/target/seed combination")
++    return policy, model_provenance, normalized_samples
++
++
++def safe_observation_boundaries(
++    samples: Sequence[Mapping[str, Any]], policy: Mapping[str, Any]
++) -> dict[str, int]:
++    boundaries: dict[str, int] = {}
++    for model_id in policy["models"]:
++        group_boundaries: list[int] = []
++        for shape in policy["semantic_shapes"]:
++            for seed in policy["seeds"]:
++                observed = [
++                    row["token_count"]
++                    for row in samples
++                    if row["model"] == model_id
++                    and row["semantic_shape"] == shape
++                    and row["seed"] == seed
++                ]
++                if not observed:
++                    raise ValueError(f"no safe observations for {model_id}/{shape}/seed-{seed}")
++                group_boundaries.append(max(observed))
++        boundaries[model_id] = min(group_boundaries)
++    return boundaries
++
++
++def build_candidate(report: Mapping[str, Any], maxima: Mapping[str, int]) -> dict[str, Any]:
++    policy, models, samples = validate_report(report)
++    if set(maxima) != set(policy["models"]):
++        raise ValueError("candidate maxima must be supplied for both canonical models")
++    boundaries = safe_observation_boundaries(samples, policy)
++    model_policy: dict[str, dict[str, Any]] = {}
++    evidence_revision = _canonical_sha256(report)
++    for model_id in policy["models"]:
++        maximum = maxima[model_id]
++        if type(maximum) is not int or maximum <= 0:
++            raise ValueError(f"candidate maximum for {model_id} must be a positive integer")
++        if maximum > boundaries[model_id]:
++            raise ValueError(
++                f"candidate maximum for {model_id} exceeds safe observation boundary "
++                f"{boundaries[model_id]} model tokens"
++            )
++        model_policy[model_id] = {
++            "maximum": maximum,
++            "basis": "validated-safe-request-budget",
++            "corpus": policy["corpus"],
++            "safe_observation_boundary": boundaries[model_id],
++        }
++    payload: dict[str, Any] = {
++        "schema": 1,
++        "unit": "model_tokens",
++        "corpus": policy["corpus"],
++        "evidence_sha256": evidence_revision,
++        "runtime_identity": dict(report["runtime_identity"]),
++        "environment": dict(report["environment"]),
++        "generated_with": dict(report["generated_with"]),
++        "provenance": [dict(record) for record in models],
++        "models": model_policy,
++    }
++    payload["revision"] = _canonical_sha256(payload)
++    return payload
++
++
++def _parse_maxima(values: Sequence[str]) -> dict[str, int]:
++    result: dict[str, int] = {}
++    for value in values:
++        if "=" not in value:
++            raise ValueError("--maximum must use MODEL=TOKEN_COUNT")
++        model_id, raw_count = value.split("=", 1)
++        if model_id in result or model_id not in benchmark.EXPECTED_MODELS:
++            raise ValueError(f"duplicate or non-canonical model ID in --maximum: {model_id!r}")
++        try:
++            count = int(raw_count)
++        except ValueError:
++            raise ValueError(f"invalid maximum for {model_id}: {raw_count!r}") from None
++        if str(count) != raw_count:
++            raise ValueError(f"maximum for {model_id} must be a plain positive integer")
++        result[model_id] = count
++    return result
++
++
++def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("report", nargs="?", type=Path, default=DEFAULT_REPORT)
++    parser.add_argument("--maximum", action="append", required=True, metavar="MODEL=TOKEN_COUNT")
++    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
++    parser.add_argument("--force", action="store_true", help="replace an existing candidate output")
++    return parser.parse_args(argv)
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    args = parse_args(argv)
++    output = args.output.resolve()
++    report_path = args.report.resolve()
++    if output == PRODUCTION_POLICY.resolve():
++        raise SystemExit(
++            "promotion writes candidate policies only; it never overwrites production policy"
++        )
++    if output == report_path:
++        raise SystemExit("candidate output must not overwrite the source benchmark report")
++    if output.exists() and not args.force:
++        raise SystemExit(f"candidate output already exists: {output}; pass --force to replace it")
++    try:
++        raw = json.loads(report_path.read_text(encoding="utf-8"), object_pairs_hook=_json_pairs)
++        if not isinstance(raw, Mapping):
++            raise ValueError("benchmark report must be an object")
++        maxima = _parse_maxima(args.maximum)
++        candidate = build_candidate(raw, maxima)
++    except (OSError, json.JSONDecodeError, ValueError) as error:
++        raise SystemExit(f"cannot promote request capacity: {error}") from error
++    output.parent.mkdir(parents=True, exist_ok=True)
++    temporary = output.with_suffix(output.suffix + ".tmp")
++    temporary.write_text(
++        json.dumps(candidate, indent=2, sort_keys=True, allow_nan=False) + "\n",
++        encoding="utf-8",
++    )
++    temporary.replace(output)
++    print(f"Candidate policy: {output}")
++    print(f"Policy revision: {candidate['revision']}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/benchmarks/request_capacity_benchmark.py b/benchmarks/request_capacity_benchmark.py
+new file mode 100644
+index 0000000..14d4947
+--- /dev/null
++++ b/benchmarks/request_capacity_benchmark.py
+@@ -0,0 +1,425 @@
++#!/usr/bin/env python3
++"""Opt-in characterization of real InflectSynth request sizes and audio output."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.metadata
++import json
++import math
++import platform
++import time
++from collections.abc import Mapping, Sequence
++from pathlib import Path
++from typing import Any, Protocol
++
++import numpy as np
++
++from inflectsynth import (
++    DEFAULT_VOICE,
++    InflectVoice,
++    RequestMeasure,
++    SynthesisConfig,
++    VoiceLevelConfig,
++    runtime_identity,
++)
++
++POLICY_PATH = Path(__file__).with_name("data") / "request_capacity_policy.json"
++STIMULI_PATH = Path(__file__).with_name("data") / "request_capacity_stimuli.json"
++DEFAULT_OUTPUT = Path("benchmarks/output/request_capacity/report.json")
++EXPECTED_MODELS = ("nano-v2", "micro-v2")
++_POLICY_FIELDS = {
++    "schema",
++    "corpus",
++    "models",
++    "target_token_counts",
++    "semantic_shapes",
++    "seeds",
++    "speed",
++    "variation",
++    "sample_rate",
++    "max_audio_seconds",
++}
++_STIMULI_FIELDS = {"schema", "name", "language", "phrases"}
++
++
++class _Measurer(Protocol):
++    def measure_prepared(self, text: str) -> RequestMeasure: ...
++
++
++class _BenchmarkModel(_Measurer, Protocol):
++    model_id: str
++    model_ref: str | None
++
++    @property
++    def metadata(self) -> Mapping[str, Any]: ...
++
++    @property
++    def installed(self) -> Any: ...
++
++    def synthesize_prepared(self, text: str, *, voice: str, config: SynthesisConfig) -> Any: ...
++
++
++def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"duplicate JSON object key: {key!r}")
++        result[key] = value
++    return result
++
++
++def _read_json(path: Path) -> Any:
++    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_json_pairs)
++
++
++def load_policy(path: Path = POLICY_PATH) -> dict[str, Any]:
++    policy = _read_json(path)
++    if not isinstance(policy, Mapping) or set(policy) != _POLICY_FIELDS:
++        raise ValueError("request-capacity policy has an invalid shape")
++    if policy.get("schema") != 1 or isinstance(policy.get("schema"), bool):
++        raise ValueError("request-capacity policy has an unsupported schema")
++    if policy.get("corpus") != "inflectsynth-request-capacity-v1":
++        raise ValueError("request-capacity policy has an unsupported corpus")
++    models = policy.get("models")
++    if models != list(EXPECTED_MODELS):
++        raise ValueError(f"models must be the canonical IDs {list(EXPECTED_MODELS)}")
++    targets = policy.get("target_token_counts")
++    if (
++        not isinstance(targets, list)
++        or not targets
++        or any(type(target) is not int or target <= 0 for target in targets)
++        or targets != sorted(set(targets))
++    ):
++        raise ValueError("target_token_counts must be unique increasing positive integers")
++    shapes = policy.get("semantic_shapes")
++    if shapes != ["one_sentence", "multiple_sentences"]:
++        raise ValueError("both one-sentence and multiple-sentence shapes are required")
++    seeds = policy.get("seeds")
++    if (
++        not isinstance(seeds, list)
++        or len(seeds) < 3
++        or any(type(seed) is not int or seed < 0 for seed in seeds)
++        or len(set(seeds)) != len(seeds)
++    ):
++        raise ValueError("at least three unique non-negative deterministic seeds are required")
++    if policy.get("speed") != 1.0 or policy.get("variation") != 0.667:
++        raise ValueError("the benchmark controls must be speed=1.0 and variation=0.667")
++    if policy.get("sample_rate") != 24_000 or isinstance(policy.get("sample_rate"), bool):
++        raise ValueError("the expected sample rate must be 24000 Hz")
++    max_audio_seconds = policy.get("max_audio_seconds")
++    if (
++        isinstance(max_audio_seconds, bool)
++        or not isinstance(max_audio_seconds, (int, float))
++        or not math.isfinite(float(max_audio_seconds))
++        or max_audio_seconds <= 0
++    ):
++        raise ValueError("max_audio_seconds must be positive and finite")
++    return dict(policy)
++
++
++def load_stimuli(path: Path = STIMULI_PATH) -> dict[str, Any]:
++    document = _read_json(path)
++    if not isinstance(document, Mapping) or set(document) != _STIMULI_FIELDS:
++        raise ValueError("request-capacity stimuli have an invalid shape")
++    if document.get("schema") != 1 or isinstance(document.get("schema"), bool):
++        raise ValueError("request-capacity stimuli have an unsupported schema")
++    for field in ("name", "language"):
++        if not isinstance(document.get(field), str) or not document[field].strip():
++            raise ValueError(f"stimuli {field} must be a non-empty string")
++    phrases = document.get("phrases")
++    if not isinstance(phrases, list) or len(phrases) < 4:
++        raise ValueError("stimuli must provide at least four phrase fragments")
++    if any(not isinstance(item, str) or not item.strip() for item in phrases):
++        raise ValueError("every stimulus phrase must be a non-empty string")
++    return {**dict(document), "phrases": list(phrases)}
++
++
++def _text_with_phrase_count(phrases: Sequence[str], count: int, shape: str) -> str:
++    selected = [phrases[index % len(phrases)].strip().rstrip(".!?;:") for index in range(count)]
++    if shape == "one_sentence":
++        return ", and ".join(selected) + "."
++    if shape != "multiple_sentences":
++        raise ValueError(f"unsupported semantic shape: {shape!r}")
++    return " ".join(f"{phrase}." for phrase in selected)
++
++
++def choose_text_for_token_target(
++    measurer: _Measurer,
++    phrases: Sequence[str],
++    target: int,
++    shape: str,
++) -> tuple[str, int]:
++    """Choose a deterministic stimulus using frontend token counts, not character length."""
++    if type(target) is not int or target <= 0:
++        raise ValueError("target must be a positive integer")
++    minimum_phrases = 1 if shape == "one_sentence" else 2
++    maximum_phrases = max(minimum_phrases, target * 4)
++    measured: dict[int, int] = {}
++
++    def count_tokens(phrase_count: int) -> int:
++        if phrase_count not in measured:
++            text = _text_with_phrase_count(phrases, phrase_count, shape)
++            measured[phrase_count] = measurer.measure_prepared(text).amount
++        return measured[phrase_count]
++
++    low = minimum_phrases
++    high = low
++    while count_tokens(high) < target and high < maximum_phrases:
++        low = high
++        high = min(maximum_phrases, high * 2)
++    while low + 1 < high:
++        middle = (low + high) // 2
++        if count_tokens(middle) < target:
++            low = middle
++        else:
++            high = middle
++    candidate_counts = {minimum_phrases, low, high, min(maximum_phrases, high + 1)}
++    best_count = min(
++        candidate_counts,
++        key=lambda amount: (abs(count_tokens(amount) - target), count_tokens(amount) > target),
++    )
++    text = _text_with_phrase_count(phrases, best_count, shape)
++    return text, count_tokens(best_count)
++
++
++def _package_versions() -> dict[str, str]:
++    versions: dict[str, str] = {}
++    for name in ("inflectsynth", "inflectg2p", "onnxvoice"):
++        try:
++            versions[name] = importlib.metadata.version(name)
++        except importlib.metadata.PackageNotFoundError:
++            versions[name] = "unknown"
++    return versions
++
++
++def _sha256(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as artifact:
++        for block in iter(lambda: artifact.read(1024 * 1024), b""):
++            digest.update(block)
++    return digest.hexdigest()
++
++
++def model_provenance(model: _BenchmarkModel) -> dict[str, Any]:
++    metadata = model.metadata
++    upstream = metadata.get("upstream", {})
++    upstream = upstream if isinstance(upstream, Mapping) else {}
++    revision = (
++        metadata.get("source_revision")
++        or upstream.get("source_revision")
++        or upstream.get("revision")
++    )
++    artifacts: dict[str, dict[str, Any]] = {}
++    for name in ("duration", "decode"):
++        path = Path(getattr(model.installed, f"{name}_path"))
++        artifacts[name] = {"bytes": path.stat().st_size, "sha256": _sha256(path)}
++    return {
++        "model_id": model.model_id,
++        "model_ref": model.model_ref,
++        "source_revision": revision,
++        "artifacts": artifacts,
++    }
++
++
++def measure_sample(
++    model: _BenchmarkModel,
++    *,
++    model_id: str,
++    semantic_shape: str,
++    target_token_count: int,
++    text: str,
++    seed: int,
++    policy: Mapping[str, Any],
++) -> dict[str, Any]:
++    row: dict[str, Any] = {
++        "model": model_id,
++        "semantic_shape": semantic_shape,
++        "target_token_count": target_token_count,
++        "source_text_length": len(text),
++        "normalized_text_length": None,
++        "token_count": None,
++        "seed": seed,
++        "speed": float(policy["speed"]),
++        "variation": float(policy["variation"]),
++        "synthesis_success": False,
++        "exception_type": None,
++        "audio_samples": None,
++        "audio_seconds": None,
++        "real_seconds": None,
++        "xrt": None,
++        "sample_rate": None,
++        "finite_pcm": None,
++        "peak_abs": None,
++    }
++    started = time.perf_counter()
++    phase = "measurement"
++    try:
++        measurement = model.measure_prepared(text)
++        row["token_count"] = measurement.amount
++        phase = "synthesis"
++        config = SynthesisConfig(
++            speed=float(policy["speed"]),
++            variation=float(policy["variation"]),
++            seed=seed,
++            voice_level=VoiceLevelConfig(mode="off"),
++        )
++        result = model.synthesize_prepared(text, voice=DEFAULT_VOICE, config=config)
++        row["normalized_text_length"] = len(result.metadata["normalized_text"])
++        if result.metadata["token_count"] != measurement.amount:
++            raise ValueError("measurement token count differs from synthesis token count")
++        audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
++        finite_pcm = bool(audio.size > 0 and np.all(np.isfinite(audio)))
++        row["audio_samples"] = int(audio.size)
++        row["sample_rate"] = int(result.sample_rate)
++        row["audio_seconds"] = float(audio.size / result.sample_rate)
++        row["finite_pcm"] = finite_pcm
++        row["peak_abs"] = float(np.max(np.abs(audio))) if audio.size else None
++        if not finite_pcm:
++            raise ValueError("audio must be non-empty and finite")
++        row["synthesis_success"] = True
++    except Exception as error:
++        row["exception_type"] = type(error).__name__
++        row["exception_phase"] = phase
++    elapsed = time.perf_counter() - started
++    row["real_seconds"] = elapsed
++    audio_seconds = row["audio_seconds"]
++    row["xrt"] = (
++        elapsed / audio_seconds if isinstance(audio_seconds, float) and audio_seconds > 0 else None
++    )
++    return row
++
++
++def run_model(
++    model: _BenchmarkModel,
++    *,
++    model_id: str,
++    policy: Mapping[str, Any],
++    stimuli: Mapping[str, Any],
++) -> list[dict[str, Any]]:
++    if model.model_id != model_id:
++        raise ValueError(f"requested model {model_id!r} resolved to {model.model_id!r}")
++    rows: list[dict[str, Any]] = []
++    for shape in policy["semantic_shapes"]:
++        for target in policy["target_token_counts"]:
++            text, _actual_tokens = choose_text_for_token_target(
++                model, stimuli["phrases"], target, shape
++            )
++            for seed in policy["seeds"]:
++                rows.append(
++                    measure_sample(
++                        model,
++                        model_id=model_id,
++                        semantic_shape=shape,
++                        target_token_count=target,
++                        text=text,
++                        seed=seed,
++                        policy=policy,
++                    )
++                )
++    return rows
++
++
++def build_report(
++    policy: Mapping[str, Any],
++    stimuli: Mapping[str, Any],
++    models: Sequence[Mapping[str, Any]],
++    samples: Sequence[Mapping[str, Any]],
++    model_open_failures: Sequence[Mapping[str, Any]],
++) -> dict[str, Any]:
++    expected = len(policy["models"]) * len(policy["semantic_shapes"])
++    expected *= len(policy["target_token_counts"]) * len(policy["seeds"])
++    complete = (
++        len(samples) == expected
++        and not model_open_failures
++        and all(row.get("synthesis_success") is True for row in samples)
++    )
++    return {
++        "schema": 1,
++        "unit": "model_tokens",
++        "corpus": policy["corpus"],
++        "policy": dict(policy),
++        "stimuli": dict(stimuli),
++        "generated_with": _package_versions(),
++        "runtime_identity": dict(runtime_identity()),
++        "environment": {
++            "python_version": platform.python_version(),
++            "platform": platform.platform(),
++        },
++        "models": [dict(item) for item in models],
++        "model_open_failures": [dict(item) for item in model_open_failures],
++        "coverage": {
++            "models_expected": len(policy["models"]),
++            "models_opened": len(models),
++            "samples_expected": expected,
++            "samples_recorded": len(samples),
++            "synthesis_failures": sum(row.get("synthesis_success") is not True for row in samples),
++            "complete": complete,
++        },
++        "samples": [dict(row) for row in samples],
++    }
++
++
++def write_report(path: Path, report: Mapping[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(
++        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
++        encoding="utf-8",
++    )
++    temporary.replace(path)
++
++
++def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--run-real-models",
++        action="store_true",
++        help="explicitly opt in to loading/running real ONNX models",
++    )
++    parser.add_argument("--model", action="append", choices=EXPECTED_MODELS)
++    parser.add_argument("--cache-dir", type=Path)
++    parser.add_argument("--offline", action="store_true")
++    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
++    parser.add_argument("--policy", type=Path, default=POLICY_PATH)
++    parser.add_argument("--stimuli", type=Path, default=STIMULI_PATH)
++    return parser.parse_args(argv)
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    args = parse_args(argv)
++    if not args.run_real_models:
++        raise SystemExit("real-model benchmark is gated; pass --run-real-models explicitly")
++    policy = load_policy(args.policy)
++    stimuli = load_stimuli(args.stimuli)
++    requested = args.model or list(policy["models"])
++    models: list[dict[str, Any]] = []
++    samples: list[dict[str, Any]] = []
++    open_failures: list[dict[str, Any]] = []
++    for model_id in requested:
++        try:
++            voice = InflectVoice.from_pretrained(
++                model_id, cache_dir=args.cache_dir, offline=args.offline
++            )
++        except Exception as error:
++            open_failures.append(
++                {"model": model_id, "exception_type": type(error).__name__, "error": str(error)}
++            )
++            continue
++        with voice:
++            models.append(model_provenance(voice))
++            samples.extend(run_model(voice, model_id=model_id, policy=policy, stimuli=stimuli))
++    report = build_report(policy, stimuli, models, samples, open_failures)
++    write_report(args.output, report)
++    coverage = report["coverage"]
++    print(f"Report: {args.output}")
++    print(
++        f"Coverage: {coverage['samples_recorded']}/{coverage['samples_expected']} samples; "
++        f"{coverage['synthesis_failures']} synthesis failure(s)"
++    )
++    return 0 if coverage["complete"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/examples/all_models.py b/examples/all_models.py
+index c3422d3..84725cf 100644
+--- a/examples/all_models.py
++++ b/examples/all_models.py
+@@ -1,6 +1,6 @@
+-from inflectsynth import InflectVoice, list_models
++from inflectsynth import DEFAULT_VOICE, InflectVoice, list_models
+
+ for info in list_models():
+     with InflectVoice.from_pretrained(info.id, providers="cpu") as model:
+-        result = model.synthesize(f"This is {info.name}.", voice="default", seed=7)
++        result = model.synthesize(f"This is {info.name}.", voice=DEFAULT_VOICE, seed=7)
+         result.save_wav(f"{info.id}.wav")
+diff --git a/examples/basic.py b/examples/basic.py
+index 5d91a9c..5a1947e 100644
+--- a/examples/basic.py
++++ b/examples/basic.py
+@@ -1,5 +1,5 @@
+-from inflectsynth import InflectVoice
++from inflectsynth import DEFAULT_MODEL, InflectVoice
+
+-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as model:
++with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as model:
+     result = model.synthesize("Hello from InflectSynth.", seed=7)
+     result.save_wav("inflect-nano.wav")
+diff --git a/examples/calibrated.py b/examples/calibrated.py
+index 2d8f0e7..282e803 100644
+--- a/examples/calibrated.py
++++ b/examples/calibrated.py
+@@ -1,8 +1,8 @@
+-from inflectsynth import InflectVoice, SynthesisConfig, VoiceLevelConfig
++from inflectsynth import DEFAULT_MODEL, InflectVoice, SynthesisConfig, VoiceLevelConfig
+
+ config = SynthesisConfig(voice_level=VoiceLevelConfig(mode="calibrated"))
+
+-with InflectVoice.from_pretrained("nano-v2", providers="cpu") as model:
++with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as model:
+     result = model.synthesize("Hello from calibrated InflectSynth.", config=config)
+     result.save_wav("inflect-nano-calibrated.wav")
+     print(result.metadata["voice_level"])
+diff --git a/inflectsynth/__init__.py b/inflectsynth/__init__.py
+index a8d498d..bdd0a24 100644
+--- a/inflectsynth/__init__.py
++++ b/inflectsynth/__init__.py
+@@ -3,9 +3,15 @@
+ from importlib.metadata import PackageNotFoundError
+ from importlib.metadata import version as _distribution_version
+
+-from .api_contract import REQUEST_API_VERSION, request_api_contract
++from .api_contract import (
++    CAPACITY_API_VERSION,
++    REQUEST_API_VERSION,
++    capacity_api_contract,
++    request_api_contract,
++)
+ from .catalog import list_models
+ from .config import SynthesisConfig
++from .constants import DEFAULT_MODEL, DEFAULT_VOICE, SAMPLE_RATE
+ from .discovery import DescribedVoice, DiscoveredModel, discover_models
+ from .errors import (
+     ArtifactIntegrityError,
+@@ -24,10 +30,12 @@ from .errors import (
+     OfflineModelError,
+     OnnxVoiceContractError,
+     ProviderUnavailableError,
++    SynthesisInputTooLongError,
++    TextPreparationError,
+     UnsupportedModelError,
+ )
+ from .identity import runtime_identity
+-from .types import ModelInfo, SynthesisResult, VoiceInfo
++from .types import ModelInfo, RequestMeasure, SynthesisResult, VoiceInfo
+ from .voice import InflectVoice
+ from .voice_level import (
+     CalibrationDataError,
+@@ -51,6 +59,11 @@ __all__ = [
+     "__version__",
+     "REQUEST_API_VERSION",
+     "request_api_contract",
++    "CAPACITY_API_VERSION",
++    "capacity_api_contract",
++    "DEFAULT_MODEL",
++    "DEFAULT_VOICE",
++    "SAMPLE_RATE",
+     "runtime_identity",
+     "discover_models",
+     "DescribedVoice",
+@@ -58,6 +71,7 @@ __all__ = [
+     "InflectVoice",
+     "SynthesisConfig",
+     "SynthesisResult",
++    "RequestMeasure",
+     "VoiceInfo",
+     "VoiceLevelConfig",
+     "VoiceLevelMode",
+@@ -71,6 +85,8 @@ __all__ = [
+     "load_voice_calibration",
+     "InflectSynthError",
+     "EmptyTextError",
++    "TextPreparationError",
++    "SynthesisInputTooLongError",
+     "InvalidSpeedError",
+     "InvalidVariationError",
+     "InvalidSeedError",
+diff --git a/inflectsynth/__main__.py b/inflectsynth/__main__.py
+index 3dbf26f..b81e55e 100644
+--- a/inflectsynth/__main__.py
++++ b/inflectsynth/__main__.py
+@@ -1,16 +1,21 @@
++"""Command-line synthesis and request-measurement tools."""
++
+ from __future__ import annotations
+
+ import argparse
++import json
++from collections.abc import Sequence
+
+ from .catalog import list_models
++from .constants import DEFAULT_MODEL, DEFAULT_VOICE
+ from .voice import InflectVoice
+
+
+-def parse_args() -> argparse.Namespace:
++def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+     parser = argparse.ArgumentParser(description="Synthesize speech with Inflect v2 ONNX models")
+     parser.add_argument("text", nargs="?")
+-    parser.add_argument("--model", default="nano-v2")
+-    parser.add_argument("--voice", default="default")
++    parser.add_argument("--model", default=DEFAULT_MODEL)
++    parser.add_argument("--voice", default=DEFAULT_VOICE)
+     parser.add_argument("--speed", type=float, default=1.0)
+     parser.add_argument("--variation", type=float, default=0.667)
+     parser.add_argument("--seed", type=int, default=0)
+@@ -20,18 +25,52 @@ def parse_args() -> argparse.Namespace:
+     parser.add_argument("--offline", action="store_true")
+     parser.add_argument("--force-download", action="store_true")
+     parser.add_argument("--list-models", action="store_true")
++    parser.add_argument(
++        "--measure",
++        metavar="TEXT",
++        help="report prepared-text model-token measurement as JSON without acoustic inference",
++    )
+     parser.add_argument("-o", "--output", default="inflect.wav")
+-    return parser.parse_args()
++    return parser.parse_args(argv)
+
+
+-def main() -> int:
+-    args = parse_args()
++def main(argv: Sequence[str] | None = None) -> int:
++    args = parse_args(argv)
+     if args.list_models:
++        if args.measure is not None:
++            raise SystemExit("--measure cannot be combined with --list-models")
+         for model in list_models(catalog_url=args.catalog_url):
+             print(f"{model.id}\t{model.name}\tvoices={','.join(v.id for v in model.voices)}")
+         return 0
++
++    if args.measure is not None:
++        if args.text is not None:
++            raise SystemExit("use either positional text or --measure, not both")
++        with InflectVoice.from_pretrained(
++            args.model,
++            cache_dir=args.cache_dir,
++            catalog_url=args.catalog_url,
++            offline=args.offline,
++            force_download=args.force_download,
++            providers=args.provider,
++        ) as engine:
++            measurement = engine.measure_prepared(args.measure)
++        print(
++            json.dumps(
++                {
++                    "model": measurement.model_id,
++                    "amount": measurement.amount,
++                    "maximum": measurement.maximum,
++                    "unit": measurement.unit,
++                    "fits": measurement.fits,
++                },
++                sort_keys=True,
++            )
++        )
++        return 0
++
+     if not args.text:
+-        raise SystemExit("text is required unless --list-models is used")
++        raise SystemExit("text is required unless --list-models or --measure is used")
+     with InflectVoice.from_pretrained(
+         args.model,
+         cache_dir=args.cache_dir,
+diff --git a/inflectsynth/api_contract.py b/inflectsynth/api_contract.py
+index 291cb4e..1b2c382 100644
+--- a/inflectsynth/api_contract.py
++++ b/inflectsynth/api_contract.py
+@@ -26,4 +26,26 @@ def request_api_contract() -> Mapping[str, str | bool]:
+     return _REQUEST_API_CONTRACT
+
+
+-__all__ = ["REQUEST_API_VERSION", "request_api_contract"]
++CAPACITY_API_VERSION = 1
++
++_CAPACITY_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
++    {
++        "entrypoint": "InflectVoice.measure_prepared",
++        "unit": "model_tokens",
++        "supports_known_maximum": False,
++        "caller_owns_text_boundaries": True,
++    }
++)
++
++
++def capacity_api_contract() -> Mapping[str, str | bool]:
++    """Return the immutable capacity API declaration without model access."""
++    return _CAPACITY_API_CONTRACT
++
++
++__all__ = [
++    "REQUEST_API_VERSION",
++    "request_api_contract",
++    "CAPACITY_API_VERSION",
++    "capacity_api_contract",
++]
+diff --git a/inflectsynth/constants.py b/inflectsynth/constants.py
+new file mode 100644
+index 0000000..b8ff218
+--- /dev/null
++++ b/inflectsynth/constants.py
+@@ -0,0 +1,7 @@
++"""Dependency-light public defaults for InflectSynth."""
++
++DEFAULT_MODEL = "nano-v2"
++DEFAULT_VOICE = "default"
++SAMPLE_RATE = 24_000
++
++__all__ = ["DEFAULT_MODEL", "DEFAULT_VOICE", "SAMPLE_RATE"]
+diff --git a/inflectsynth/errors.py b/inflectsynth/errors.py
+index 336fa6c..2e83fe6 100644
+--- a/inflectsynth/errors.py
++++ b/inflectsynth/errors.py
+@@ -6,6 +6,29 @@ class EmptyTextError(InflectSynthError, ValueError):
+     """The prepared synthesis text is empty or has the wrong type."""
+
+
++class TextPreparationError(InflectSynthError, RuntimeError):
++    """Prepared text could not be converted into model-ready Inflect token IDs."""
++
++
++class SynthesisInputTooLongError(InflectSynthError, ValueError):
++    """Prepared input exceeds the supported InflectSynth request budget."""
++
++    def __init__(
++        self,
++        message: str,
++        *,
++        token_count: int,
++        max_tokens: int,
++        text_length: int,
++        model_id: str,
++    ) -> None:
++        super().__init__(message)
++        self.token_count = token_count
++        self.max_tokens = max_tokens
++        self.text_length = text_length
++        self.model_id = model_id
++
++
+ class InvalidSynthesisConfigError(InflectSynthError, ValueError):
+     """The synthesis configuration has an invalid shape or value."""
+
+diff --git a/inflectsynth/types.py b/inflectsynth/types.py
+index b8aa7b6..2e45ccb 100644
+--- a/inflectsynth/types.py
++++ b/inflectsynth/types.py
+@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
+ from numbers import Integral
+ from pathlib import Path
+ from types import MappingProxyType
+-from typing import Any
++from typing import Any, Literal
+
+ import numpy as np
+
+@@ -42,6 +42,33 @@ class ModelInfo:
+     revision: str
+
+
++@dataclass(frozen=True, slots=True)
++class RequestMeasure:
++    """Capacity measurement for one exact prepared-text request."""
++
++    fits: bool | None
++    amount: int
++    maximum: int | None
++    unit: Literal["model_tokens"] = "model_tokens"
++    source: str = "inflectsynth.frontend"
++    model_id: str | None = None
++
++    def __post_init__(self) -> None:
++        if type(self.amount) is not int or self.amount < 0:
++            raise ValueError("amount must be a non-negative Python integer")
++        if self.maximum is not None and (type(self.maximum) is not int or self.maximum <= 0):
++            raise ValueError("maximum must be None or a positive Python integer")
++        if self.fits is not None and type(self.fits) is not bool:
++            raise ValueError("fits must be True, False, or None")
++        if self.unit != "model_tokens":
++            raise ValueError("unit must be 'model_tokens'")
++        if self.maximum is None:
++            if self.fits is not None:
++                raise ValueError("fits must be None when maximum is unknown")
++        elif self.fits != (self.amount <= self.maximum):
++            raise ValueError("fits must match amount <= maximum")
++
++
+ @dataclass(frozen=True, slots=True)
+ class SynthesisResult:
+     audio: np.ndarray
+diff --git a/inflectsynth/voice.py b/inflectsynth/voice.py
+index 7701ecb..6bddf79 100644
+--- a/inflectsynth/voice.py
++++ b/inflectsynth/voice.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+
+ from collections.abc import Mapping, Sequence
+-from dataclasses import replace
++from dataclasses import dataclass, replace
+ from numbers import Integral
+ from pathlib import Path
+ from typing import Any
+@@ -17,21 +17,30 @@ from ._onnxvoice import (
+     open_local_model,
+ )
+ from .config import SynthesisConfig
++from .constants import DEFAULT_MODEL, DEFAULT_VOICE, SAMPLE_RATE
+ from .errors import (
+     EmptyTextError,
+     InflectSynthError,
+     InvalidSynthesisConfigError,
+     InvalidVoiceError,
+     ModelInferenceError,
++    SynthesisInputTooLongError,
++    TextPreparationError,
+ )
+-from .types import SynthesisResult, VoiceInfo
++from .types import RequestMeasure, SynthesisResult, VoiceInfo
+ from .voice_level import (
+     VoiceCalibrationKey,
+     VoiceLevelApplication,
+     apply_voice_level_calibration,
+ )
+
+-SAMPLE_RATE = 24_000
++
++@dataclass(frozen=True, slots=True)
++class _PreparedText:
++    source_text: str
++    normalized_text: str
++    phonemes: str
++    token_ids: tuple[int, ...]
+
+
+ class InflectVoice:
+@@ -55,10 +64,43 @@ class InflectVoice:
+         self._closed = False
+         self._last_voice_level_application: VoiceLevelApplication | None = None
+
++    def _prepare_text(self, text: str) -> _PreparedText:
++        if self._closed:
++            raise RuntimeError("InflectVoice is closed")
++        if not isinstance(text, str) or not text.strip():
++            raise EmptyTextError("prepared text must be a non-empty string")
++        try:
++            frontend = self.g2p.phonemize_prepared(text)
++            return _PreparedText(
++                source_text=text,
++                normalized_text=frontend.text,
++                phonemes=frontend.phonemes,
++                token_ids=tuple(frontend.token_ids),
++            )
++        except InflectSynthError:
++            raise
++        except Exception as exc:
++            raise TextPreparationError("InflectG2P failed to phonemize prepared text") from exc
++
++    def _maximum_input_tokens(self) -> int | None:
++        """Return a validated model budget, or None when capacity is unknown."""
++        return None
++
++    def measure_prepared(self, text: str) -> RequestMeasure:
++        """Measure the exact model tokens produced for one prepared request."""
++        prepared = self._prepare_text(text)
++        maximum = self._maximum_input_tokens()
++        return RequestMeasure(
++            fits=(len(prepared.token_ids) <= maximum) if maximum is not None else None,
++            amount=len(prepared.token_ids),
++            maximum=maximum,
++            model_id=self.model_id,
++        )
++
+     @classmethod
+     def from_pretrained(
+         cls,
+-        model: str = "nano-v2",
++        model: str = DEFAULT_MODEL,
+         *,
+         cache_dir: str | Path | None = None,
+         offline: bool = False,
+@@ -106,10 +148,10 @@ class InflectVoice:
+         metadata = {
+             "id": model_id,
+             "sample_rate": SAMPLE_RATE,
+-            "default_voice": "default",
++            "default_voice": DEFAULT_VOICE,
+             "voices": {
+-                "default": {
+-                    "id": "default",
++                DEFAULT_VOICE: {
++                    "id": DEFAULT_VOICE,
+                     "name": "Default",
+                     "language": "en-US",
+                     "locale": "en-US",
+@@ -137,8 +179,8 @@ class InflectVoice:
+
+     @property
+     def available_voices(self) -> tuple[str, ...]:
+-        voices = self.metadata.get("voices", {"default": {}})
+-        return tuple(voices) if isinstance(voices, Mapping) else ("default",)
++        voices = self.metadata.get("voices", {DEFAULT_VOICE: {}})
++        return tuple(voices) if isinstance(voices, Mapping) else (DEFAULT_VOICE,)
+
+     @property
+     def voices(self) -> tuple[VoiceInfo, ...]:
+@@ -172,7 +214,7 @@ class InflectVoice:
+         self,
+         text: str,
+         *,
+-        voice: str = "default",
++        voice: str = DEFAULT_VOICE,
+         speed: float = 1.0,
+         variation: float = 0.667,
+         seed: int = 0,
+@@ -184,7 +226,7 @@ class InflectVoice:
+             raise EmptyTextError("prepared text must be a non-empty string")
+         if voice not in self.available_voices:
+             raise InvalidVoiceError(
+-                "Inflect v2 base releases contain one fixed voice; voice must be 'default'"
++                f"Inflect v2 base releases contain one fixed voice; voice must be {DEFAULT_VOICE!r}"
+             )
+         if config is not None and not isinstance(config, SynthesisConfig):
+             raise InvalidSynthesisConfigError("config must be a SynthesisConfig")
+@@ -194,15 +236,24 @@ class InflectVoice:
+             else SynthesisConfig(speed=speed, variation=variation, seed=seed).validated()
+         )
+
+-        try:
+-            frontend = self.g2p.phonemize_prepared(text)
+-        except InflectSynthError:
+-            raise
+-        except Exception as exc:
+-            raise ModelInferenceError("InflectG2P failed to phonemize prepared text") from exc
++        prepared = self._prepare_text(text)
++        maximum = self._maximum_input_tokens()
++        token_count = len(prepared.token_ids)
++        if maximum is not None and token_count > maximum:
++            raise SynthesisInputTooLongError(
++                (
++                    f"Inflect prepared request uses {token_count} model tokens; "
++                    f"maximum is {maximum} for {self.model_id!r}"
++                ),
++                token_count=token_count,
++                max_tokens=maximum,
++                text_length=len(text),
++                model_id=self.model_id,
++            )
++
+         try:
+             inference = self.runtime.infer(
+-                frontend.token_ids,
++                prepared.token_ids,
+                 speed=synthesis_config.speed,
+                 variation=synthesis_config.variation,
+                 seed=synthesis_config.seed,
+@@ -252,9 +303,9 @@ class InflectVoice:
+             seed=synthesis_config.seed,
+             model_ref=self.model_ref,
+             metadata={
+-                "normalized_text": frontend.text,
+-                "phoneme_text": frontend.phonemes,
+-                "token_count": len(frontend.token_ids),
++                "normalized_text": prepared.normalized_text,
++                "phoneme_text": prepared.phonemes,
++                "token_count": token_count,
+                 "model_id": self.model_id,
+                 "revision": revision,
+                 "voice_level": {
+diff --git a/inflectsynth/voice_level.py b/inflectsynth/voice_level.py
+index 38102d9..d18b83c 100644
+--- a/inflectsynth/voice_level.py
++++ b/inflectsynth/voice_level.py
+@@ -22,8 +22,7 @@ from .errors import InflectSynthError, InvalidSynthesisConfigError
+ class _ReadableTextResource(Protocol):
+     """Minimal resource interface needed by the calibration loader."""
+
+-    def read_text(self, encoding: str | None = None) -> str:
+-        ...
++    def read_text(self, encoding: str | None = None) -> str: ...
+
+
+ _SUPPORTED_SCHEMA = 1
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+new file mode 100644
+index 0000000..ffe7366
+--- /dev/null
++++ b/tests/test_cli.py
+@@ -0,0 +1,68 @@
++from __future__ import annotations
++
++import json
++from typing import Any
++
++import pytest
++
++import inflectsynth.__main__ as cli
++from inflectsynth import DEFAULT_MODEL, DEFAULT_VOICE, RequestMeasure
++
++
++class FakeVoice:
++    def __init__(self) -> None:
++        self.measured_text: str | None = None
++
++    def __enter__(self) -> FakeVoice:
++        return self
++
++    def __exit__(self, *_args: object) -> None:
++        return None
++
++    def measure_prepared(self, text: str) -> RequestMeasure:
++        self.measured_text = text
++        return RequestMeasure(
++            fits=None,
++            amount=42,
++            maximum=None,
++            model_id=DEFAULT_MODEL,
++        )
++
++
++def test_cli_defaults_use_public_constants() -> None:
++    args = cli.parse_args([])
++    assert args.model == DEFAULT_MODEL
++    assert args.voice == DEFAULT_VOICE
++
++
++def test_cli_measure_outputs_json_without_synthesis(
++    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    voice = FakeVoice()
++    opened: dict[str, Any] = {}
++
++    def open_voice(model: str, **kwargs: Any) -> FakeVoice:
++        opened.update(model=model, **kwargs)
++        return voice
++
++    monkeypatch.setattr(cli.InflectVoice, "from_pretrained", open_voice)
++
++    assert cli.main(["--measure", "  exact prepared text  "]) == 0
++
++    assert voice.measured_text == "  exact prepared text  "
++    assert opened["model"] == DEFAULT_MODEL
++    output = json.loads(capsys.readouterr().out)
++    assert output == {
++        "amount": 42,
++        "fits": None,
++        "maximum": None,
++        "model": DEFAULT_MODEL,
++        "unit": "model_tokens",
++    }
++
++
++def test_cli_measure_rejects_ambiguous_or_list_mode() -> None:
++    with pytest.raises(SystemExit, match="not both"):
++        cli.main(["positional text", "--measure", "flag text"])
++    with pytest.raises(SystemExit, match="cannot be combined"):
++        cli.main(["--list-models", "--measure", "text"])
+diff --git a/tests/test_promote_request_capacity.py b/tests/test_promote_request_capacity.py
+new file mode 100644
+index 0000000..6837814
+--- /dev/null
++++ b/tests/test_promote_request_capacity.py
+@@ -0,0 +1,141 @@
++from __future__ import annotations
++
++from copy import deepcopy
++from typing import Any
++
++import pytest
++
++from benchmarks import promote_request_capacity as promoter
++from benchmarks import request_capacity_benchmark as benchmark
++
++
++def _complete_report() -> dict[str, Any]:
++    policy = benchmark.load_policy()
++    stimuli = benchmark.load_stimuli()
++    models = [
++        {
++            "model_id": model_id,
++            "model_ref": f"inflect:{model_id}",
++            "source_revision": f"revision-{model_id}",
++            "artifacts": {
++                name: {"bytes": 100, "sha256": "a" * 64} for name in ("duration", "decode")
++            },
++        }
++        for model_id in policy["models"]
++    ]
++    samples = []
++    for model_id in policy["models"]:
++        for shape in policy["semantic_shapes"]:
++            for target in policy["target_token_counts"]:
++                for seed in policy["seeds"]:
++                    samples.append(
++                        {
++                            "model": model_id,
++                            "semantic_shape": shape,
++                            "target_token_count": target,
++                            "source_text_length": target * 2,
++                            "normalized_text_length": target * 2,
++                            "token_count": target,
++                            "seed": seed,
++                            "speed": policy["speed"],
++                            "variation": policy["variation"],
++                            "synthesis_success": True,
++                            "exception_type": None,
++                            "audio_samples": 24_000,
++                            "audio_seconds": 1.0,
++                            "real_seconds": 0.5,
++                            "xrt": 0.5,
++                            "sample_rate": policy["sample_rate"],
++                            "finite_pcm": True,
++                            "peak_abs": 0.5,
++                        }
++                    )
++    report = benchmark.build_report(policy, stimuli, models, samples, [])
++    report["generated_with"] = {
++        "inflectsynth": "0.1.1",
++        "inflectg2p": "0.1.0",
++        "onnxvoice": "0.2.5",
++    }
++    report["runtime_identity"] = {
++        "engine": "inflect",
++        "engine_version": "0.1.1",
++        "g2p_revision": "0.1.0",
++        "runtime_revision": "0.2.5",
++        "request_api_version": "1",
++    }
++    report["environment"] = {"python_version": "3.12.0", "platform": "release-test"}
++    return report
++
++
++def test_candidate_uses_reproducible_policy_and_per_model_safe_boundaries() -> None:
++    report = _complete_report()
++    candidate = promoter.build_candidate(report, {"nano-v2": 300, "micro-v2": 200})
++
++    assert candidate["unit"] == "model_tokens"
++    assert candidate["models"]["nano-v2"]["maximum"] == 300
++    assert candidate["models"]["micro-v2"]["maximum"] == 200
++    assert candidate["models"]["nano-v2"]["basis"] == "validated-safe-request-budget"
++    assert candidate["models"]["nano-v2"]["safe_observation_boundary"] == 400
++    assert len(candidate["revision"]) == 64
++    assert len(candidate["evidence_sha256"]) == 64
++
++
++def test_candidate_rejects_incomplete_failed_or_noncanonical_evidence() -> None:
++    incomplete = _complete_report()
++    incomplete["coverage"]["complete"] = False
++    with pytest.raises(ValueError, match="coverage is incomplete"):
++        promoter.build_candidate(incomplete, {"nano-v2": 100, "micro-v2": 100})
++
++    failed = _complete_report()
++    failed["samples"][0]["synthesis_success"] = False
++    with pytest.raises(ValueError, match="failed synthesis"):
++        promoter.build_candidate(failed, {"nano-v2": 100, "micro-v2": 100})
++
++    noncanonical = _complete_report()
++    noncanonical["models"][0]["model_id"] = "nano"
++    with pytest.raises(ValueError, match="canonical"):
++        promoter.build_candidate(noncanonical, {"nano-v2": 100, "micro-v2": 100})
++
++
++def test_unsupported_android_runtime_cannot_promote_capacity() -> None:
++    report = _complete_report()
++    report["environment"]["platform"] = "Android-16-aarch64-64bit-ELF"
++    with pytest.raises(ValueError, match="unsupported Android runtime"):
++        promoter.build_candidate(report, {"nano-v2": 100, "micro-v2": 100})
++
++
++def test_candidate_maximum_must_be_positive_and_within_each_safe_boundary() -> None:
++    report = _complete_report()
++    with pytest.raises(ValueError, match="positive integer"):
++        promoter.build_candidate(report, {"nano-v2": 0, "micro-v2": 100})
++    with pytest.raises(ValueError, match="safe observation boundary"):
++        promoter.build_candidate(report, {"nano-v2": 401, "micro-v2": 100})
++
++
++def test_report_validator_rejects_duplicate_and_missing_samples() -> None:
++    duplicate = _complete_report()
++    duplicate["samples"][-1] = deepcopy(duplicate["samples"][0])
++    with pytest.raises(ValueError, match="duplicate"):
++        promoter.build_candidate(duplicate, {"nano-v2": 100, "micro-v2": 100})
++
++    missing = _complete_report()
++    missing["samples"].pop()
++    with pytest.raises(ValueError, match="sample count"):
++        promoter.build_candidate(missing, {"nano-v2": 100, "micro-v2": 100})
++
++
++def test_promotion_never_writes_production_policy(tmp_path) -> None:
++    report_path = tmp_path / "report.json"
++    report_path.write_text("{}", encoding="utf-8")
++    with pytest.raises(SystemExit, match="never overwrites production policy"):
++        promoter.main(
++            [
++                str(report_path),
++                "--maximum",
++                "nano-v2=100",
++                "--maximum",
++                "micro-v2=100",
++                "--output",
++                str(promoter.PRODUCTION_POLICY),
++            ]
++        )
+diff --git a/tests/test_public_api.py b/tests/test_public_api.py
+index 849448b..a29ad10 100644
+--- a/tests/test_public_api.py
++++ b/tests/test_public_api.py
+@@ -1,5 +1,7 @@
+ from __future__ import annotations
+
++import inspect
++
+ import inflectsynth
+
+
+@@ -13,6 +15,14 @@ def test_root_exports_the_readio_request_contract() -> None:
+         "runtime_identity",
+         "REQUEST_API_VERSION",
+         "request_api_contract",
++        "CAPACITY_API_VERSION",
++        "capacity_api_contract",
++        "DEFAULT_MODEL",
++        "DEFAULT_VOICE",
++        "SAMPLE_RATE",
++        "RequestMeasure",
++        "TextPreparationError",
++        "SynthesisInputTooLongError",
+         "VoiceLevelConfig",
+         "InflectSynthError",
+         "EmptyTextError",
+@@ -35,4 +45,19 @@ def test_voice_has_managed_local_atomic_and_lifecycle_methods() -> None:
+     assert callable(inflectsynth.InflectVoice.from_pretrained)
+     assert callable(inflectsynth.InflectVoice.from_local)
+     assert callable(inflectsynth.InflectVoice.synthesize_prepared)
++    assert callable(inflectsynth.InflectVoice.measure_prepared)
+     assert callable(inflectsynth.InflectVoice.close)
++
++
++def test_public_defaults_match_the_exported_constants() -> None:
++    assert inflectsynth.DEFAULT_MODEL == "nano-v2"
++    assert inflectsynth.DEFAULT_VOICE == "default"
++    assert inflectsynth.SAMPLE_RATE == 24_000
++    assert (
++        inspect.signature(inflectsynth.InflectVoice.from_pretrained).parameters["model"].default
++        == inflectsynth.DEFAULT_MODEL
++    )
++    assert (
++        inspect.signature(inflectsynth.InflectVoice.synthesize_prepared).parameters["voice"].default
++        == inflectsynth.DEFAULT_VOICE
++    )
+diff --git a/tests/test_request_api_contract.py b/tests/test_request_api_contract.py
+index c6ea9d4..47af7c4 100644
+--- a/tests/test_request_api_contract.py
++++ b/tests/test_request_api_contract.py
+@@ -1,11 +1,14 @@
+ from __future__ import annotations
+
+-from collections.abc import Mapping
++import operator
++from collections.abc import Mapping, MutableMapping
++from typing import cast
+
+ import pytest
+
+ import inflectsynth
+ import inflectsynth._onnxvoice as onnxvoice_boundary
++import inflectsynth.voice as voice_module
+
+
+ def test_request_api_contract_is_exact_immutable_and_side_effect_free(
+@@ -28,5 +31,29 @@ def test_request_api_contract_is_exact_immutable_and_side_effect_free(
+         "caller_owns_text_boundaries": True,
+     }
+     with pytest.raises(TypeError):
+-        contract["supports_speakers"] = True  # type: ignore[index]
++        operator.setitem(cast(MutableMapping[str, object], contract), "supports_speakers", True)
++    assert inflectsynth.REQUEST_API_VERSION == 1
++
++
++def test_capacity_api_contract_is_additive_and_dependency_light(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    def fail_if_runtime_accessed(*_args: object, **_kwargs: object) -> object:
++        raise AssertionError("capacity contract inspection must not access ONNXVoice")
++
++    monkeypatch.setattr(onnxvoice_boundary, "_module", fail_if_runtime_accessed)
++    monkeypatch.setattr(voice_module, "InflectG2P", fail_if_runtime_accessed)
++    contract = inflectsynth.capacity_api_contract()
++    assert isinstance(contract, Mapping)
++    assert contract == {
++        "entrypoint": "InflectVoice.measure_prepared",
++        "unit": "model_tokens",
++        "supports_known_maximum": False,
++        "caller_owns_text_boundaries": True,
++    }
++    with pytest.raises(TypeError):
++        operator.setitem(
++            cast(MutableMapping[str, object], contract), "supports_known_maximum", True
++        )
++    assert inflectsynth.CAPACITY_API_VERSION == 1
+     assert inflectsynth.REQUEST_API_VERSION == 1
+diff --git a/tests/test_request_capacity_benchmark.py b/tests/test_request_capacity_benchmark.py
+new file mode 100644
+index 0000000..2d3364c
+--- /dev/null
++++ b/tests/test_request_capacity_benchmark.py
+@@ -0,0 +1,117 @@
++from __future__ import annotations
++
++from types import SimpleNamespace
++from typing import Any
++
++import numpy as np
++import pytest
++
++from benchmarks import request_capacity_benchmark as benchmark
++from inflectsynth import RequestMeasure
++
++
++class FakeModel:
++    model_id = "nano-v2"
++    model_ref = "inflect:nano-v2"
++
++    def __init__(self, *, fail: bool = False) -> None:
++        self.fail = fail
++        self.calls: list[dict[str, Any]] = []
++        self.metadata: dict[str, Any] = {}
++        self.installed = SimpleNamespace()
++
++    def measure_prepared(self, text: str) -> RequestMeasure:
++        return RequestMeasure(
++            fits=None,
++            amount=len(text.split()),
++            maximum=None,
++            model_id=self.model_id,
++        )
++
++    def synthesize_prepared(self, text: str, *, voice: str, config: Any) -> Any:
++        self.calls.append({"text": text, "voice": voice, "config": config})
++        if self.fail:
++            raise RuntimeError("synthetic failure")
++        return SimpleNamespace(
++            audio=np.asarray([0.1, -0.1, 0.05], dtype=np.float32),
++            sample_rate=24_000,
++            metadata={"normalized_text": text.strip(), "token_count": len(text.split())},
++        )
++
++
++def test_policy_and_stimuli_cover_required_models_shapes_targets_and_seeds() -> None:
++    policy = benchmark.load_policy()
++    stimuli = benchmark.load_stimuli()
++    assert policy["models"] == ["nano-v2", "micro-v2"]
++    assert policy["target_token_counts"] == [10, 20, 30, 40, 50, 75, 100, 150, 200, 300, 400]
++    assert policy["semantic_shapes"] == ["one_sentence", "multiple_sentences"]
++    assert len(policy["seeds"]) >= 3
++    assert len(stimuli["phrases"]) >= 4
++
++
++def test_text_targets_are_chosen_from_frontend_token_measurements() -> None:
++    model = FakeModel()
++    text, amount = benchmark.choose_text_for_token_target(
++        model, ["one two three", "four five"], target=10, shape="multiple_sentences"
++    )
++    assert amount == model.measure_prepared(text).amount
++    assert text.count(".") >= 2
++    assert abs(amount - 10) <= 3
++
++
++def test_sample_record_contains_runtime_pcm_and_token_evidence() -> None:
++    model = FakeModel()
++    policy = benchmark.load_policy()
++    text = "A few prepared words."
++
++    row = benchmark.measure_sample(
++        model,
++        model_id="nano-v2",
++        semantic_shape="one_sentence",
++        target_token_count=10,
++        text=text,
++        seed=2,
++        policy=policy,
++    )
++
++    assert row["synthesis_success"] is True
++    assert row["token_count"] == len(text.split())
++    assert row["source_text_length"] == len(text)
++    assert row["normalized_text_length"] == len(text.strip())
++    assert row["audio_samples"] == 3
++    assert row["audio_seconds"] == pytest.approx(3 / 24_000)
++    assert row["real_seconds"] >= 0
++    assert row["xrt"] > 0
++    assert row["sample_rate"] == 24_000
++    assert row["finite_pcm"] is True
++    assert row["peak_abs"] == pytest.approx(0.1)
++    assert row["exception_type"] is None
++    assert model.calls[0]["config"].voice_level.mode == "off"
++
++
++def test_sample_failures_are_recorded_without_being_promoted() -> None:
++    row = benchmark.measure_sample(
++        FakeModel(fail=True),
++        model_id="nano-v2",
++        semantic_shape="one_sentence",
++        target_token_count=10,
++        text="A request.",
++        seed=0,
++        policy=benchmark.load_policy(),
++    )
++    assert row["synthesis_success"] is False
++    assert row["exception_type"] == "RuntimeError"
++    assert row["exception_phase"] == "synthesis"
++    assert row["token_count"] == 2
++
++
++def test_report_coverage_requires_the_complete_matrix() -> None:
++    policy = benchmark.load_policy()
++    report = benchmark.build_report(policy, benchmark.load_stimuli(), [], [], [])
++    assert report["coverage"]["complete"] is False
++    assert report["coverage"]["samples_expected"] == 132
++
++
++def test_real_model_execution_is_explicitly_gated() -> None:
++    with pytest.raises(SystemExit, match="pass --run-real-models explicitly"):
++        benchmark.main([])
+diff --git a/tests/test_request_measurement.py b/tests/test_request_measurement.py
+new file mode 100644
+index 0000000..ad811ea
+--- /dev/null
++++ b/tests/test_request_measurement.py
+@@ -0,0 +1,199 @@
++from __future__ import annotations
++
++from pathlib import Path
++from types import SimpleNamespace
++from typing import Any
++
++import pytest
++
++import inflectsynth
++from inflectsynth import InflectVoice, RequestMeasure, SynthesisInputTooLongError
++from inflectsynth._onnxvoice import ResolvedInflectModel
++from inflectsynth.errors import EmptyTextError, TextPreparationError
++
++
++class FakeG2P:
++    def __init__(self, token_ids: tuple[int, ...] = (4, 5, 6)) -> None:
++        self.token_ids = token_ids
++        self.calls: list[str] = []
++        self.error: Exception | None = None
++        self.closed = 0
++
++    def phonemize_prepared(self, text: str) -> Any:
++        self.calls.append(text)
++        if self.error is not None:
++            raise self.error
++        return SimpleNamespace(text=text.strip(), phonemes="fəˈnetɪks", token_ids=self.token_ids)
++
++    def close(self) -> None:
++        self.closed += 1
++
++
++class FakeRuntime:
++    sample_rate = 24_000
++
++    def __init__(self) -> None:
++        self.calls: list[tuple[int, ...]] = []
++        self.closed = 0
++
++    def infer(self, token_ids: tuple[int, ...], **_kwargs: Any) -> Any:
++        self.calls.append(token_ids)
++        return SimpleNamespace(audio=(0.1, -0.1), sample_rate=self.sample_rate)
++
++    def close(self) -> None:
++        self.closed += 1
++
++
++def make_voice(
++    *, managed: bool = True, token_ids: tuple[int, ...] = (4, 5, 6)
++) -> tuple[InflectVoice, FakeRuntime, FakeG2P]:
++    runtime = FakeRuntime()
++    g2p = FakeG2P(token_ids)
++    model_id = "nano-v2" if managed else "local-model"
++    installed = ResolvedInflectModel(
++        ref=f"inflect:{model_id}" if managed else None,
++        model_id=model_id,
++        duration_path=Path("duration.onnx"),
++        decode_path=Path("decode.onnx"),
++        sample_rate=24_000,
++        metadata={
++            "id": model_id,
++            "voices": {"default": {"id": "default"}},
++        },
++        installation=object(),
++    )
++    return InflectVoice(runtime=runtime, installed=installed, g2p=g2p), runtime, g2p
++
++
++def test_measurement_uses_exact_input_and_never_runs_acoustic_inference() -> None:
++    text = "  Keep   this prepared text.  "
++    voice, runtime, g2p = make_voice()
++    previous_application = voice.last_voice_level_application
++
++    measure = voice.measure_prepared(text)
++
++    assert g2p.calls == [text]
++    assert measure == RequestMeasure(fits=None, amount=3, maximum=None, model_id="nano-v2")
++    assert measure.unit == "model_tokens"
++    assert runtime.calls == []
++    assert voice.last_voice_level_application is previous_application
++
++
++def test_measurement_and_synthesis_report_the_same_frontend_token_count() -> None:
++    voice, runtime, g2p = make_voice(token_ids=(12, 9, 2, 7))
++    text = "A prepared request."
++
++    measure = voice.measure_prepared(text)
++    result = voice.synthesize_prepared(text)
++
++    assert g2p.calls == [text, text]
++    assert measure.amount == result.metadata["token_count"] == 4
++    assert runtime.calls == [(12, 9, 2, 7)]
++
++
++def test_known_capacity_reports_fit_and_local_models_default_to_unknown(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    managed, _, _ = make_voice(token_ids=(1, 2, 3))
++    monkeypatch.setattr(managed, "_maximum_input_tokens", lambda: 3)
++    assert managed.measure_prepared("fits").fits is True
++
++    local, _, _ = make_voice(managed=False)
++    measurement = local.measure_prepared("unknown")
++    assert measurement.maximum is None
++    assert measurement.fits is None
++
++
++def test_synthesis_rejects_over_budget_before_inference_with_stable_attributes(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    voice, runtime, _ = make_voice(token_ids=(1, 2, 3, 4))
++    monkeypatch.setattr(voice, "_maximum_input_tokens", lambda: 3)
++    text = "too long"
++
++    with pytest.raises(SynthesisInputTooLongError) as caught:
++        voice.synthesize_prepared(text)
++
++    error = caught.value
++    assert error.token_count == 4
++    assert error.max_tokens == 3
++    assert error.text_length == len(text)
++    assert error.model_id == "nano-v2"
++    assert runtime.calls == []
++
++
++def test_request_at_known_capacity_synthesizes(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    voice, runtime, _ = make_voice(token_ids=(1, 2, 3))
++    monkeypatch.setattr(voice, "_maximum_input_tokens", lambda: 3)
++
++    result = voice.synthesize_prepared("at limit")
++
++    assert result.metadata["token_count"] == 3
++    assert runtime.calls == [(1, 2, 3)]
++
++
++def test_unknown_capacity_does_not_create_a_synthetic_synthesis_limit() -> None:
++    voice, runtime, _ = make_voice(managed=False, token_ids=tuple(range(500)))
++
++    result = voice.synthesize_prepared("long but not policy-limited")
++
++    assert result.metadata["token_count"] == 500
++    assert len(runtime.calls) == 1
++
++
++def test_empty_and_closed_voice_measurement_errors_match_synthesis() -> None:
++    voice, _, g2p = make_voice()
++    with pytest.raises(EmptyTextError):
++        voice.measure_prepared("   ")
++    assert g2p.calls == []
++
++    voice.close()
++    with pytest.raises(RuntimeError, match="closed"):
++        voice.measure_prepared("text")
++
++
++def test_unexpected_g2p_failure_maps_to_text_preparation_error() -> None:
++    voice, runtime, g2p = make_voice()
++    g2p.error = RuntimeError("frontend detail")
++
++    with pytest.raises(TextPreparationError) as caught:
++        voice.measure_prepared("text")
++
++    assert isinstance(caught.value.__cause__, RuntimeError)
++    assert runtime.calls == []
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"fits": None, "amount": -1, "maximum": None},
++        {"fits": None, "amount": True, "maximum": None},
++        {"fits": None, "amount": 0, "maximum": 0},
++        {"fits": None, "amount": 0, "maximum": True},
++        {"fits": 1, "amount": 0, "maximum": None},
++        {"fits": True, "amount": 2, "maximum": None},
++        {"fits": False, "amount": 2, "maximum": 2},
++    ],
++)
++def test_request_measure_rejects_invalid_or_contradictory_values(
++    kwargs: dict[str, Any],
++) -> None:
++    with pytest.raises(ValueError):
++        RequestMeasure(**kwargs)
++
++
++def test_public_capacity_symbols_are_exported() -> None:
++    for symbol in (
++        "DEFAULT_MODEL",
++        "DEFAULT_VOICE",
++        "SAMPLE_RATE",
++        "RequestMeasure",
++        "CAPACITY_API_VERSION",
++        "capacity_api_contract",
++        "TextPreparationError",
++        "SynthesisInputTooLongError",
++    ):
++        assert symbol in inflectsynth.__all__
++        assert hasattr(inflectsynth, symbol)
+diff --git a/tests/test_voice_contract.py b/tests/test_voice_contract.py
+index 232113f..6bf4510 100644
+--- a/tests/test_voice_contract.py
++++ b/tests/test_voice_contract.py
+@@ -1,8 +1,10 @@
+ from __future__ import annotations
+
++import operator
++from collections.abc import MutableMapping
+ from pathlib import Path
+ from types import SimpleNamespace
+-from typing import Any
++from typing import Any, cast
+
+ import numpy as np
+ import pytest
+@@ -18,6 +20,7 @@ from inflectsynth.errors import (
+     InvalidVariationError,
+     InvalidVoiceError,
+     ModelInferenceError,
++    TextPreparationError,
+ )
+
+
+@@ -145,7 +148,7 @@ def test_config_is_authoritative_and_result_metadata_is_immutable() -> None:
+     )
+     assert runtime.calls[0][1] == {"speed": 0.75, "variation": 0.25, "seed": 4}
+     with pytest.raises(TypeError):
+-        result.metadata["changed"] = True  # type: ignore[index]
++        operator.setitem(cast(MutableMapping[str, Any], result.metadata), "changed", True)
+
+
+ def test_prepared_text_is_not_whitespace_collapsed() -> None:
+@@ -239,7 +242,7 @@ def test_g2p_failures_are_translated_before_runtime_inference(
+         raise RuntimeError("phonemizer detail")
+
+     monkeypatch.setattr(g2p, "phonemize_prepared", fail)
+-    with pytest.raises(ModelInferenceError) as caught:
++    with pytest.raises(TextPreparationError) as caught:
+         voice.synthesize_prepared("Hello.")
+     assert isinstance(caught.value.__cause__, RuntimeError)
+     assert runtime.calls == []

@@ -1,0 +1,41 @@
+rows:
+  - sha: 17aa803e650faf85aed6b5b200da9392cedf844f
+    inspected: true
+    inspected_paths:
+      - README.md
+      - benchmarks/data/request_capacity_policy.json
+      - benchmarks/data/request_capacity_stimuli.json
+      - benchmarks/promote_request_capacity.py
+      - benchmarks/request_capacity_benchmark.py
+      - examples/all_models.py
+      - examples/basic.py
+      - examples/calibrated.py
+      - inflectsynth/__init__.py
+      - inflectsynth/__main__.py
+      - inflectsynth/api_contract.py
+      - inflectsynth/constants.py
+      - inflectsynth/errors.py
+      - inflectsynth/types.py
+      - inflectsynth/voice.py
+      - inflectsynth/voice_level.py
+      - tests/test_cli.py
+      - tests/test_promote_request_capacity.py
+      - tests/test_public_api.py
+      - tests/test_request_api_contract.py
+      - tests/test_request_capacity_benchmark.py
+      - tests/test_request_measurement.py
+      - tests/test_voice_contract.py
+    observed_behavior: >-
+      Adds a public prepared-request capacity measurement API and JSON CLI mode,
+      exports stable defaults and measurement/error types, measures the exact
+      frontend token sequence without acoustic inference, and enforces an
+      optional validated request budget before synthesis. Documentation and
+      regression coverage describe atomic request ownership and unknown capacity.
+    public_impact: public
+    decision: accepted
+    target_entry_key: null
+    target_entry_id: null
+    notes: >-
+      Reviewed the complete patch and associated tests; the checked-in release
+      behavior exposes new public API and documentation changes.
+    stale: false

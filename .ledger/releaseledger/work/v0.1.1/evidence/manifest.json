@@ -1,0 +1,47 @@
+{
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "additions": 1620,
+      "deletions": 49,
+      "patch_file": "17aa803.patch",
+      "patch_sha256": "62dc4e1d154fcd852bfe518ff1bfbf47f2bfe0537c5752f47af933e8c3d7b1e9",
+      "paths": [
+        "README.md",
+        "benchmarks/data/request_capacity_policy.json",
+        "benchmarks/data/request_capacity_stimuli.json",
+        "benchmarks/promote_request_capacity.py",
+        "benchmarks/request_capacity_benchmark.py",
+        "examples/all_models.py",
+        "examples/basic.py",
+        "examples/calibrated.py",
+        "inflectsynth/__init__.py",
+        "inflectsynth/__main__.py",
+        "inflectsynth/api_contract.py",
+        "inflectsynth/constants.py",
+        "inflectsynth/errors.py",
+        "inflectsynth/types.py",
+        "inflectsynth/voice.py",
+        "inflectsynth/voice_level.py",
+        "tests/test_cli.py",
+        "tests/test_promote_request_capacity.py",
+        "tests/test_public_api.py",
+        "tests/test_request_api_contract.py",
+        "tests/test_request_capacity_benchmark.py",
+        "tests/test_request_measurement.py",
+        "tests/test_voice_contract.py"
+      ],
+      "sha": "17aa803e650faf85aed6b5b200da9392cedf844f",
+      "short_sha": "17aa803",
+      "source_ref": "git:17aa803e650faf85aed6b5b200da9392cedf844f"
+    }
+  ],
+  "git_base_ref": "c07b01a43326fc8b596a85abd93aa106153c4c3b",
+  "git_base_sha": "c07b01a43326fc8b596a85abd93aa106153c4c3b",
+  "git_head_ref": "17aa803e650faf85aed6b5b200da9392cedf844f",
+  "git_head_sha": "17aa803e650faf85aed6b5b200da9392cedf844f",
+  "include_merges": "nontrivial",
+  "object_type": "git_evidence_manifest",
+  "release_version": "v0.1.1",
+  "schema_version": 1
+}
