@@ -22,6 +22,9 @@ def test_request_api_contract_is_exact_immutable_and_side_effect_free(
     assert isinstance(contract, Mapping)
     assert contract == {
         "entrypoint": "InflectVoice.synthesize_prepared",
+        "supports_request_measurement": True,
+        "measurement_entrypoint": "InflectVoice.measure_prepared",
+        "measurement_metric": "model_tokens",
         "supports_linguistic_tokens": False,
         "supports_pronunciation_overrides": False,
         "supports_whole_request_phonemes": False,
@@ -48,7 +51,8 @@ def test_capacity_api_contract_is_additive_and_dependency_light(
     assert contract == {
         "entrypoint": "InflectVoice.measure_prepared",
         "unit": "model_tokens",
-        "supports_known_maximum": False,
+        "supports_known_maximum": True,
+        "policy_revision": inflectsynth.default_request_capacity_policy().revision,
         "caller_owns_text_boundaries": True,
     }
     with pytest.raises(TypeError):

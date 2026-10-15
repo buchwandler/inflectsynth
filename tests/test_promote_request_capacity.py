@@ -97,11 +97,12 @@ def test_candidate_rejects_incomplete_failed_or_noncanonical_evidence() -> None:
         promoter.build_candidate(noncanonical, {"nano-v2": 100, "micro-v2": 100})
 
 
-def test_unsupported_android_runtime_cannot_promote_capacity() -> None:
+def test_complete_android_onnx_evidence_can_be_promoted() -> None:
     report = _complete_report()
     report["environment"]["platform"] = "Android-16-aarch64-64bit-ELF"
-    with pytest.raises(ValueError, match="unsupported Android runtime"):
-        promoter.build_candidate(report, {"nano-v2": 100, "micro-v2": 100})
+    candidate = promoter.build_candidate(report, {"nano-v2": 100, "micro-v2": 100})
+    assert candidate["models"]["nano-v2"]["maximum"] == 100
+    assert candidate["models"]["micro-v2"]["maximum"] == 100
 
 
 def test_candidate_maximum_must_be_positive_and_within_each_safe_boundary() -> None:

@@ -27,6 +27,7 @@ from .errors import (
     SynthesisInputTooLongError,
     TextPreparationError,
 )
+from .request_capacity import request_capacity_for
 from .types import RequestMeasure, SynthesisResult, VoiceInfo
 from .voice_level import (
     VoiceCalibrationKey,
@@ -83,8 +84,20 @@ class InflectVoice:
             raise TextPreparationError("InflectG2P failed to phonemize prepared text") from exc
 
     def _maximum_input_tokens(self) -> int | None:
-        """Return a validated model budget, or None when capacity is unknown."""
-        return None
+        """Return a matching managed policy budget, or None when capacity is unknown."""
+        if self.model_ref != f"inflect:{self.model_id}":
+            return None
+        capacity = request_capacity_for(self.model_id)
+        if capacity is None:
+            return None
+        upstream = self.metadata.get("upstream")
+        upstream = upstream if isinstance(upstream, Mapping) else {}
+        source_revision = self.metadata.get("source_revision")
+        if source_revision is None:
+            source_revision = upstream.get("source_revision") or upstream.get("revision")
+        if source_revision is not None and source_revision != capacity.source_revision:
+            return None
+        return capacity.maximum
 
     def measure_prepared(self, text: str) -> RequestMeasure:
         """Measure the exact model tokens produced for one prepared request."""

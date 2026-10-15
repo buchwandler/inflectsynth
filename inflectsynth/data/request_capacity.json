@@ -1,0 +1,69 @@
+{
+  "corpus": "inflectsynth-request-capacity-v1",
+  "environment": {
+    "platform": "Android-16-aarch64-64bit-ELF",
+    "python_version": "3.14.6"
+  },
+  "evidence_sha256": "25484bb16e153bb33bb01fef02092daae1d7de925eced579534046500c56473e",
+  "generated_with": {
+    "inflectg2p": "0.1.0",
+    "inflectsynth": "0.1.1",
+    "onnxvoice": "0.2.7"
+  },
+  "models": {
+    "micro-v2": {
+      "basis": "validated-safe-request-budget",
+      "corpus": "inflectsynth-request-capacity-v1",
+      "maximum": 400,
+      "safe_observation_boundary": 405
+    },
+    "nano-v2": {
+      "basis": "validated-safe-request-budget",
+      "corpus": "inflectsynth-request-capacity-v1",
+      "maximum": 400,
+      "safe_observation_boundary": 405
+    }
+  },
+  "provenance": [
+    {
+      "artifacts": {
+        "decode": {
+          "bytes": 12570009,
+          "sha256": "f98b1ba21f3d5306ee6cf96a02ba9783082ef99314e77f1ee0c03954dc7de2b8"
+        },
+        "duration": {
+          "bytes": 3636541,
+          "sha256": "6e5fe09584f979dcd2da4f89d5274385ad5197efcd5ddcaa5ac03db637d7451e"
+        }
+      },
+      "model_id": "nano-v2",
+      "model_ref": "inflect:nano-v2",
+      "source_revision": "67fc9249e0bb8ab4b196d25cb09b6dd43f5e4f13"
+    },
+    {
+      "artifacts": {
+        "decode": {
+          "bytes": 30427790,
+          "sha256": "7940923add86f76e7fa78d910b0632ca1779f8cc9a2ca2b49236381a9ca77183"
+        },
+        "duration": {
+          "bytes": 7322687,
+          "sha256": "b728ca2564b9e5b7d6cf5e446f65e02a6fe2f1880ba281466fec93a667dd2388"
+        }
+      },
+      "model_id": "micro-v2",
+      "model_ref": "inflect:micro-v2",
+      "source_revision": "3e8c567f9bce1a309eea12d38ca9fbf7050df72e"
+    }
+  ],
+  "revision": "345e2622158a48a70e541e8917ba6b7437b7e921585c64e390fecfeb9c53274c",
+  "runtime_identity": {
+    "engine": "inflect",
+    "engine_version": "0.1.1",
+    "g2p_revision": "0.1.0",
+    "request_api_version": "1",
+    "runtime_revision": "0.2.7"
+  },
+  "schema": 1,
+  "unit": "model_tokens"
+}

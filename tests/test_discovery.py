@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import operator
+from collections.abc import MutableMapping
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 import inflectsynth.discovery as discovery
 from inflectsynth import CatalogDiscoveryError, CatalogUnavailableError, discover_models
+
+
+def _policy_source_revision(model_id: str) -> str:
+    capacity = discovery.request_capacity_for(model_id)
+    assert capacity is not None
+    return capacity.source_revision
 
 
 def _records() -> tuple[tuple[Any, ...], tuple[Any, ...]]:
@@ -22,7 +30,9 @@ def _records() -> tuple[tuple[Any, ...], tuple[Any, ...]]:
                 "name": name,
                 "version": "2",
                 "language": "en-US",
-                "source_revision": f"source-{model_id}",
+                "source_revision": _policy_source_revision(model_id),
+                "max_input_tokens": 9999,
+                "capacity_policy_revision": "mocked-onnxvoice-capacity",
                 "controls": {"variation": {"default": 0.667}},
                 "runtime": {"profile": "inflect-v2-split-v1"},
                 "voice_details": {
@@ -88,8 +98,14 @@ def test_discovery_maps_models_voices_and_controls_without_installing(
     assert models[0].aliases == ("nano",)
     assert models[0].sample_rate == 24_000
     assert models[0].default_voice == "default"
-    assert models[0].source_revision == "source-nano-v2"
+    assert models[0].source_revision == _policy_source_revision("nano-v2")
     assert models[0].metadata["controls"]["variation"]["default"] == 0.667
+    for model in models:
+        capacity = discovery.request_capacity_for(model.id)
+        assert capacity is not None
+        assert model.metadata["max_input_tokens"] == capacity.maximum
+        assert model.metadata["capacity_policy_revision"] == capacity.policy_revision
+        assert model.metadata["max_input_tokens"] != 9999
     assert models[0].voices == (
         discovery.DescribedVoice(
             id="default",
@@ -109,9 +125,13 @@ def test_discovery_maps_models_voices_and_controls_without_installing(
     }
     assert calls == [("items", expected), ("voices", expected)]
     with pytest.raises(TypeError):
-        models[0].metadata["changed"] = True  # type: ignore[index]
+        operator.setitem(cast(MutableMapping[str, Any], models[0].metadata), "changed", True)
     with pytest.raises(TypeError):
-        models[0].metadata["controls"]["variation"]["default"] = 0.5  # type: ignore[index]
+        operator.setitem(
+            cast(MutableMapping[str, Any], models[0].metadata["controls"]["variation"]),
+            "default",
+            0.5,
+        )
 
 
 def test_catalog_errors_are_translated_to_public_errors(monkeypatch: pytest.MonkeyPatch) -> None:

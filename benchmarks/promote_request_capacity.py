@@ -71,8 +71,6 @@ def _validate_provenance(
         or any(not isinstance(value, str) or not value for value in environment.values())
     ):
         raise ValueError("report execution environment provenance is incomplete")
-    if "android" in environment["platform"].casefold():
-        raise ValueError("unsupported Android runtime cannot promote a production capacity policy")
     runtime = report.get("runtime_identity")
     if (
         not isinstance(runtime, Mapping)

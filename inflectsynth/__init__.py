@@ -35,6 +35,13 @@ from .errors import (
     UnsupportedModelError,
 )
 from .identity import runtime_identity
+from .request_capacity import (
+    RequestCapacity,
+    RequestCapacityPolicy,
+    default_request_capacity_policy,
+    load_request_capacity_policy,
+    request_capacity_for,
+)
 from .types import ModelInfo, RequestMeasure, SynthesisResult, VoiceInfo
 from .voice import InflectVoice
 from .voice_level import (
@@ -72,6 +79,11 @@ __all__ = [
     "SynthesisConfig",
     "SynthesisResult",
     "RequestMeasure",
+    "RequestCapacity",
+    "RequestCapacityPolicy",
+    "default_request_capacity_policy",
+    "load_request_capacity_policy",
+    "request_capacity_for",
     "VoiceInfo",
     "VoiceLevelConfig",
     "VoiceLevelMode",

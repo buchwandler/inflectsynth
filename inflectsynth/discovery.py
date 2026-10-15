@@ -14,6 +14,7 @@ from .errors import (
     CatalogUnavailableError,
     InflectSynthError,
 )
+from .request_capacity import request_capacity_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,8 @@ def _described_voice(record: Any, item_metadata: Mapping[str, Any]) -> Described
 def _model_from_item(item: Any, records: Sequence[Any]) -> DiscoveredModel:
     raw_metadata = getattr(item, "metadata", None)
     metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+    metadata.pop("max_input_tokens", None)
+    metadata.pop("capacity_policy_revision", None)
     model_id = getattr(item, "id", None)
     if not isinstance(model_id, str) or not model_id:
         raise CatalogDiscoveryError("ONNXVoice returned an Inflect catalog item without an id")
@@ -155,6 +158,12 @@ def _model_from_item(item: Any, records: Sequence[Any]) -> DiscoveredModel:
     if source_revision is not None:
         metadata["source_revision"] = source_revision
 
+    capacity = request_capacity_for(model_id) if item_system == "inflect" else None
+    if capacity is not None and (
+        source_revision is None or source_revision == capacity.source_revision
+    ):
+        metadata["max_input_tokens"] = capacity.maximum
+        metadata["capacity_policy_revision"] = capacity.policy_revision
     return DiscoveredModel(
         id=model_id,
         display_name=str(metadata.get("name") or model_id),

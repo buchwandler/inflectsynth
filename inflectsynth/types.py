@@ -68,6 +68,16 @@ class RequestMeasure:
         elif self.fits != (self.amount <= self.maximum):
             raise ValueError("fits must match amount <= maximum")
 
+    @property
+    def token_count(self) -> int:
+        """Compatibility alias for the exact model-token amount."""
+        return self.amount
+
+    @property
+    def max_tokens(self) -> int | None:
+        """Compatibility alias for the supported request maximum."""
+        return self.maximum
+
 
 @dataclass(frozen=True, slots=True)
 class SynthesisResult:

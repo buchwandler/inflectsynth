@@ -78,9 +78,9 @@ with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
     print(measure.amount, measure.unit, measure.maximum, measure.fits)
 ```
 
-This release does not publish a supported maximum. Measurements therefore report the token `amount`, with `maximum=None` and `fits=None`; callers must not infer a supported limit from the count alone, model name, or an ONNX graph. A local or unmanaged model also reports unknown capacity unless a future explicit policy is supplied.
+Managed canonical models `nano-v2` and `micro-v2` have an evidence-backed supported safe request budget of 400 model tokens each. For these managed models, `maximum` is 400 and `fits` is true exactly when the measured request uses at most that many tokens. This is a conservative request budget, not a claim about the ONNX graph's hard maximum or a guarantee of perceptual quality. The packaged policy revision is available from `capacity_api_contract()` and managed discovery metadata; it records the benchmark evidence digest, runtime/package versions, model source revisions, and ONNX artifact hashes.
 
-If a future release ships a validated model-specific capacity policy, `maximum` will be a **supported safe request budget** and `fits` will state whether the measured request is within that budget. Such a budget is not an ONNX graph maximum unless authoritative runtime evidence establishes that distinction. Capacity guidance is also separate from speech-quality guidance: passing a supported budget does not guarantee a particular perceptual quality, and quality may degrade gradually rather than at a hard graph boundary.
+Local and unmanaged models always report `maximum=None` and `fits=None`; they do not inherit managed capacity by model ID or file name. No text splitting, retry chunking, or sentence segmentation is performed. Discovery publishes the same policy maximum and revision as `metadata["max_input_tokens"]` and `metadata["capacity_policy_revision"]` when its managed source revision matches the policy.
 
 For debugging, the optional CLI measurement command prints the same fields as JSON and does not synthesize audio:
 

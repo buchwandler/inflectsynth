@@ -5,11 +5,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from .request_capacity import default_request_capacity_policy
+
+_POLICY_REVISION = default_request_capacity_policy().revision
 REQUEST_API_VERSION = 1
 
 _REQUEST_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
     {
         "entrypoint": "InflectVoice.synthesize_prepared",
+        "supports_request_measurement": True,
+        "measurement_entrypoint": "InflectVoice.measure_prepared",
+        "measurement_metric": "model_tokens",
         "supports_linguistic_tokens": False,
         "supports_pronunciation_overrides": False,
         "supports_whole_request_phonemes": False,
@@ -32,8 +38,9 @@ _CAPACITY_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
     {
         "entrypoint": "InflectVoice.measure_prepared",
         "unit": "model_tokens",
-        "supports_known_maximum": False,
+        "supports_known_maximum": True,
         "caller_owns_text_boundaries": True,
+        "policy_revision": _POLICY_REVISION,
     }
 )
 

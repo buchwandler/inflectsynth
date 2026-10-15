@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Made prepared-request token measurement actionable for managed Nano v2 and Micro v2 with evidence-backed 400-token safe budgets, synchronized discovery metadata, and request-contract capability declarations; local models remain unknown-capacity.
+
 ## [v0.1.1] - 2026-10-08
 
 ### Added

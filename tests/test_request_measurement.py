@@ -45,11 +45,14 @@ class FakeRuntime:
 
 
 def make_voice(
-    *, managed: bool = True, token_ids: tuple[int, ...] = (4, 5, 6)
+    *,
+    managed: bool = True,
+    token_ids: tuple[int, ...] = (4, 5, 6),
+    model_id_override: str | None = None,
 ) -> tuple[InflectVoice, FakeRuntime, FakeG2P]:
     runtime = FakeRuntime()
     g2p = FakeG2P(token_ids)
-    model_id = "nano-v2" if managed else "local-model"
+    model_id = model_id_override or ("nano-v2" if managed else "local-model")
     installed = ResolvedInflectModel(
         ref=f"inflect:{model_id}" if managed else None,
         model_id=model_id,
@@ -73,8 +76,10 @@ def test_measurement_uses_exact_input_and_never_runs_acoustic_inference() -> Non
     measure = voice.measure_prepared(text)
 
     assert g2p.calls == [text]
-    assert measure == RequestMeasure(fits=None, amount=3, maximum=None, model_id="nano-v2")
+    assert measure == RequestMeasure(fits=True, amount=3, maximum=400, model_id="nano-v2")
     assert measure.unit == "model_tokens"
+    assert measure.token_count == measure.amount == 3
+    assert measure.max_tokens == measure.maximum == 400
     assert runtime.calls == []
     assert voice.last_voice_level_application is previous_application
 
@@ -91,17 +96,52 @@ def test_measurement_and_synthesis_report_the_same_frontend_token_count() -> Non
     assert runtime.calls == [(12, 9, 2, 7)]
 
 
-def test_known_capacity_reports_fit_and_local_models_default_to_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_managed_capacity_matches_policy_and_local_models_stay_unknown() -> None:
     managed, _, _ = make_voice(token_ids=(1, 2, 3))
-    monkeypatch.setattr(managed, "_maximum_input_tokens", lambda: 3)
-    assert managed.measure_prepared("fits").fits is True
+    measurement = managed.measure_prepared("fits")
+    assert measurement.maximum == 400
+    assert measurement.fits is True
 
     local, _, _ = make_voice(managed=False)
-    measurement = local.measure_prepared("unknown")
-    assert measurement.maximum is None
-    assert measurement.fits is None
+    local_measurement = local.measure_prepared("unknown")
+    assert local_measurement.maximum is None
+    assert local_measurement.fits is None
+
+    local_spoof, _, _ = make_voice(managed=False, model_id_override="nano-v2")
+    spoof_measurement = local_spoof.measure_prepared("must remain unknown")
+    assert spoof_measurement.maximum is None
+    assert spoof_measurement.fits is None
+
+
+def test_exact_policy_limit_fits_and_over_limit_fails_before_inference() -> None:
+    exact, exact_runtime, _ = make_voice(token_ids=tuple(range(400)))
+    exact_measure = exact.measure_prepared("exactly at limit")
+    assert exact_measure.amount == exact_measure.maximum == 400
+    assert exact_measure.fits is True
+    result = exact.synthesize_prepared("exactly at limit")
+    assert result.metadata["token_count"] == exact_measure.amount
+    assert exact_runtime.calls == [tuple(range(400))]
+
+    over, over_runtime, _ = make_voice(token_ids=tuple(range(401)))
+    over_measure = over.measure_prepared("over limit")
+    assert over_measure.amount == 401
+    assert over_measure.maximum == 400
+    assert over_measure.fits is False
+    with pytest.raises(SynthesisInputTooLongError) as caught:
+        over.synthesize_prepared("over limit")
+    assert caught.value.token_count == 401
+    assert caught.value.max_tokens == 400
+    assert over_runtime.calls == []
+
+
+def test_stale_managed_model_revision_does_not_inherit_policy_capacity() -> None:
+    voice, _, _ = make_voice()
+    voice.metadata["source_revision"] = "stale-model-revision"
+
+    measure = voice.measure_prepared("unknown due to stale policy provenance")
+
+    assert measure.maximum is None
+    assert measure.fits is None
 
 
 def test_synthesis_rejects_over_budget_before_inference_with_stable_attributes(
@@ -190,6 +230,11 @@ def test_public_capacity_symbols_are_exported() -> None:
         "DEFAULT_VOICE",
         "SAMPLE_RATE",
         "RequestMeasure",
+        "RequestCapacity",
+        "RequestCapacityPolicy",
+        "default_request_capacity_policy",
+        "load_request_capacity_policy",
+        "request_capacity_for",
         "CAPACITY_API_VERSION",
         "capacity_api_contract",
         "TextPreparationError",
