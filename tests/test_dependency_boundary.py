@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,7 @@ def test_built_wheel_metadata_installs_huggingface_transport(tmp_path) -> None:
         ),
     )
 
+    # The isolated copy omits .git, so make setuptools-scm independent of VCS discovery.
     subprocess.run(
         [
             sys.executable,
@@ -87,6 +89,7 @@ def test_built_wheel_metadata_installs_huggingface_transport(tmp_path) -> None:
             str(tmp_path),
         ],
         cwd=project,
+        env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.0.0"},
         check=True,
         capture_output=True,
         text=True,
