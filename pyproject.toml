@@ -41,6 +41,9 @@ dev = [
   "ruff>=0.16,<0.17",
   "mypy>=1.11",
   "build>=1",
+  "setuptools>=80",
+  "setuptools-scm[simple]>=9.2",
+  "wheel",
   "twine>=5",
   "packaging>=24",
 ]
