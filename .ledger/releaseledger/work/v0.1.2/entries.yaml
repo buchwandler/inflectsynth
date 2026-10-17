@@ -1,0 +1,54 @@
+schema: releaseledger.entry-batch.v1
+operation: create
+schema_version: 1
+object_type: release_entry_batch
+release_version: v0.1.2
+git_base_ref: ddb47019ba334ab8a453201984d0916cf67ef3dc
+git_base_sha: ddb47019ba334ab8a453201984d0916cf67ef3dc
+git_head_ref: 0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+git_head_sha: 0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+include_merges: nontrivial
+entries:
+  - kind: added
+    summary: Added validated 400-token request budgets for managed Nano v2 and Micro v2 models
+    status: accepted
+    source_refs:
+      - git:a61b507ae2b7bd796dcda9ff42350ca9a174693a
+    paths:
+      - README.md
+      - benchmarks/promote_request_capacity.py
+      - docs/changelog.md
+      - inflectsynth/__init__.py
+      - inflectsynth/api_contract.py
+      - inflectsynth/data/request_capacity.json
+      - inflectsynth/discovery.py
+      - inflectsynth/request_capacity.py
+      - inflectsynth/types.py
+      - inflectsynth/voice.py
+      - tests/test_discovery.py
+      - tests/test_promote_request_capacity.py
+      - tests/test_request_api_contract.py
+      - tests/test_request_capacity_policy.py
+      - tests/test_request_measurement.py
+    sources:
+      - git:a61b507ae2b7bd796dcda9ff42350ca9a174693a
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: added
+    summary: Added pinned Hugging Face asset installation for managed Inflect models
+    status: accepted
+    source_refs:
+      - git:0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+    paths:
+      - pyproject.toml
+      - tests/fixtures/inflect_nano_catalog.json
+      - tests/test_dependency_boundary.py
+      - tests/test_managed_model_install.py
+    sources:
+      - git:0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"

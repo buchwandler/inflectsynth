@@ -62,6 +62,7 @@ def test_from_pretrained_uses_managed_inflect_assets_without_network(
         cache_dir=tmp_path / "cache",
         catalog_url=str(catalog_path),
         providers="cpu",
+        g2p=object(),  # type: ignore[arg-type]
     )
     try:
         installation = voice.installed.installation

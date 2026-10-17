@@ -1,0 +1,956 @@
+ README.md                               |   4 +-
+ benchmarks/promote_request_capacity.py  |   2 -
+ docs/changelog.md                       |   6 +
+ inflectsynth/__init__.py                |  12 ++
+ inflectsynth/api_contract.py            |   9 +-
+ inflectsynth/data/request_capacity.json |  69 ++++++++
+ inflectsynth/discovery.py               |   9 +
+ inflectsynth/request_capacity.py        | 289 ++++++++++++++++++++++++++++++++
+ inflectsynth/types.py                   |  10 ++
+ inflectsynth/voice.py                   |  17 +-
+ tests/test_discovery.py                 |  30 +++-
+ tests/test_promote_request_capacity.py  |   7 +-
+ tests/test_request_api_contract.py      |   6 +-
+ tests/test_request_capacity_policy.py   | 144 ++++++++++++++++
+ tests/test_request_measurement.py       |  67 ++++++--
+ 15 files changed, 654 insertions(+), 27 deletions(-)
+
+diff --git a/README.md b/README.md
+index 8549d89..0dc2690 100644
+--- a/README.md
++++ b/README.md
+@@ -78,9 +78,9 @@ with InflectVoice.from_pretrained(DEFAULT_MODEL, providers="cpu") as tts:
+     print(measure.amount, measure.unit, measure.maximum, measure.fits)
+ ```
+
+-This release does not publish a supported maximum. Measurements therefore report the token `amount`, with `maximum=None` and `fits=None`; callers must not infer a supported limit from the count alone, model name, or an ONNX graph. A local or unmanaged model also reports unknown capacity unless a future explicit policy is supplied.
++Managed canonical models `nano-v2` and `micro-v2` have an evidence-backed supported safe request budget of 400 model tokens each. For these managed models, `maximum` is 400 and `fits` is true exactly when the measured request uses at most that many tokens. This is a conservative request budget, not a claim about the ONNX graph's hard maximum or a guarantee of perceptual quality. The packaged policy revision is available from `capacity_api_contract()` and managed discovery metadata; it records the benchmark evidence digest, runtime/package versions, model source revisions, and ONNX artifact hashes.
+
+-If a future release ships a validated model-specific capacity policy, `maximum` will be a **supported safe request budget** and `fits` will state whether the measured request is within that budget. Such a budget is not an ONNX graph maximum unless authoritative runtime evidence establishes that distinction. Capacity guidance is also separate from speech-quality guidance: passing a supported budget does not guarantee a particular perceptual quality, and quality may degrade gradually rather than at a hard graph boundary.
++Local and unmanaged models always report `maximum=None` and `fits=None`; they do not inherit managed capacity by model ID or file name. No text splitting, retry chunking, or sentence segmentation is performed. Discovery publishes the same policy maximum and revision as `metadata["max_input_tokens"]` and `metadata["capacity_policy_revision"]` when its managed source revision matches the policy.
+
+ For debugging, the optional CLI measurement command prints the same fields as JSON and does not synthesize audio:
+
+diff --git a/benchmarks/promote_request_capacity.py b/benchmarks/promote_request_capacity.py
+index 0848905..207732c 100644
+--- a/benchmarks/promote_request_capacity.py
++++ b/benchmarks/promote_request_capacity.py
+@@ -71,8 +71,6 @@ def _validate_provenance(
+         or any(not isinstance(value, str) or not value for value in environment.values())
+     ):
+         raise ValueError("report execution environment provenance is incomplete")
+-    if "android" in environment["platform"].casefold():
+-        raise ValueError("unsupported Android runtime cannot promote a production capacity policy")
+     runtime = report.get("runtime_identity")
+     if (
+         not isinstance(runtime, Mapping)
+diff --git a/docs/changelog.md b/docs/changelog.md
+index 0f595c2..41ca20a 100644
+--- a/docs/changelog.md
++++ b/docs/changelog.md
+@@ -1,5 +1,11 @@
+ # Changelog
+
++## [Unreleased]
++
++### Added
++
++- Made prepared-request token measurement actionable for managed Nano v2 and Micro v2 with evidence-backed 400-token safe budgets, synchronized discovery metadata, and request-contract capability declarations; local models remain unknown-capacity.
++
+ ## [v0.1.1] - 2026-10-08
+
+ ### Added
+diff --git a/inflectsynth/__init__.py b/inflectsynth/__init__.py
+index bdd0a24..76d6774 100644
+--- a/inflectsynth/__init__.py
++++ b/inflectsynth/__init__.py
+@@ -35,6 +35,13 @@ from .errors import (
+     UnsupportedModelError,
+ )
+ from .identity import runtime_identity
++from .request_capacity import (
++    RequestCapacity,
++    RequestCapacityPolicy,
++    default_request_capacity_policy,
++    load_request_capacity_policy,
++    request_capacity_for,
++)
+ from .types import ModelInfo, RequestMeasure, SynthesisResult, VoiceInfo
+ from .voice import InflectVoice
+ from .voice_level import (
+@@ -72,6 +79,11 @@ __all__ = [
+     "SynthesisConfig",
+     "SynthesisResult",
+     "RequestMeasure",
++    "RequestCapacity",
++    "RequestCapacityPolicy",
++    "default_request_capacity_policy",
++    "load_request_capacity_policy",
++    "request_capacity_for",
+     "VoiceInfo",
+     "VoiceLevelConfig",
+     "VoiceLevelMode",
+diff --git a/inflectsynth/api_contract.py b/inflectsynth/api_contract.py
+index 1b2c382..0593fe8 100644
+--- a/inflectsynth/api_contract.py
++++ b/inflectsynth/api_contract.py
+@@ -5,11 +5,17 @@ from __future__ import annotations
+ from collections.abc import Mapping
+ from types import MappingProxyType
+
++from .request_capacity import default_request_capacity_policy
++
++_POLICY_REVISION = default_request_capacity_policy().revision
+ REQUEST_API_VERSION = 1
+
+ _REQUEST_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
+     {
+         "entrypoint": "InflectVoice.synthesize_prepared",
++        "supports_request_measurement": True,
++        "measurement_entrypoint": "InflectVoice.measure_prepared",
++        "measurement_metric": "model_tokens",
+         "supports_linguistic_tokens": False,
+         "supports_pronunciation_overrides": False,
+         "supports_whole_request_phonemes": False,
+@@ -32,8 +38,9 @@ _CAPACITY_API_CONTRACT: Mapping[str, str | bool] = MappingProxyType(
+     {
+         "entrypoint": "InflectVoice.measure_prepared",
+         "unit": "model_tokens",
+-        "supports_known_maximum": False,
++        "supports_known_maximum": True,
+         "caller_owns_text_boundaries": True,
++        "policy_revision": _POLICY_REVISION,
+     }
+ )
+
+diff --git a/inflectsynth/data/request_capacity.json b/inflectsynth/data/request_capacity.json
+new file mode 100644
+index 0000000..bc9e21d
+--- /dev/null
++++ b/inflectsynth/data/request_capacity.json
+@@ -0,0 +1,69 @@
++{
++  "corpus": "inflectsynth-request-capacity-v1",
++  "environment": {
++    "platform": "Android-16-aarch64-64bit-ELF",
++    "python_version": "3.14.6"
++  },
++  "evidence_sha256": "25484bb16e153bb33bb01fef02092daae1d7de925eced579534046500c56473e",
++  "generated_with": {
++    "inflectg2p": "0.1.0",
++    "inflectsynth": "0.1.1",
++    "onnxvoice": "0.2.7"
++  },
++  "models": {
++    "micro-v2": {
++      "basis": "validated-safe-request-budget",
++      "corpus": "inflectsynth-request-capacity-v1",
++      "maximum": 400,
++      "safe_observation_boundary": 405
++    },
++    "nano-v2": {
++      "basis": "validated-safe-request-budget",
++      "corpus": "inflectsynth-request-capacity-v1",
++      "maximum": 400,
++      "safe_observation_boundary": 405
++    }
++  },
++  "provenance": [
++    {
++      "artifacts": {
++        "decode": {
++          "bytes": 12570009,
++          "sha256": "f98b1ba21f3d5306ee6cf96a02ba9783082ef99314e77f1ee0c03954dc7de2b8"
++        },
++        "duration": {
++          "bytes": 3636541,
++          "sha256": "6e5fe09584f979dcd2da4f89d5274385ad5197efcd5ddcaa5ac03db637d7451e"
++        }
++      },
++      "model_id": "nano-v2",
++      "model_ref": "inflect:nano-v2",
++      "source_revision": "67fc9249e0bb8ab4b196d25cb09b6dd43f5e4f13"
++    },
++    {
++      "artifacts": {
++        "decode": {
++          "bytes": 30427790,
++          "sha256": "7940923add86f76e7fa78d910b0632ca1779f8cc9a2ca2b49236381a9ca77183"
++        },
++        "duration": {
++          "bytes": 7322687,
++          "sha256": "b728ca2564b9e5b7d6cf5e446f65e02a6fe2f1880ba281466fec93a667dd2388"
++        }
++      },
++      "model_id": "micro-v2",
++      "model_ref": "inflect:micro-v2",
++      "source_revision": "3e8c567f9bce1a309eea12d38ca9fbf7050df72e"
++    }
++  ],
++  "revision": "345e2622158a48a70e541e8917ba6b7437b7e921585c64e390fecfeb9c53274c",
++  "runtime_identity": {
++    "engine": "inflect",
++    "engine_version": "0.1.1",
++    "g2p_revision": "0.1.0",
++    "request_api_version": "1",
++    "runtime_revision": "0.2.7"
++  },
++  "schema": 1,
++  "unit": "model_tokens"
++}
+diff --git a/inflectsynth/discovery.py b/inflectsynth/discovery.py
+index 4d4bebb..90a4a71 100644
+--- a/inflectsynth/discovery.py
++++ b/inflectsynth/discovery.py
+@@ -14,6 +14,7 @@ from .errors import (
+     CatalogUnavailableError,
+     InflectSynthError,
+ )
++from .request_capacity import request_capacity_for
+
+
+ @dataclass(frozen=True, slots=True)
+@@ -98,6 +99,8 @@ def _described_voice(record: Any, item_metadata: Mapping[str, Any]) -> Described
+ def _model_from_item(item: Any, records: Sequence[Any]) -> DiscoveredModel:
+     raw_metadata = getattr(item, "metadata", None)
+     metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
++    metadata.pop("max_input_tokens", None)
++    metadata.pop("capacity_policy_revision", None)
+     model_id = getattr(item, "id", None)
+     if not isinstance(model_id, str) or not model_id:
+         raise CatalogDiscoveryError("ONNXVoice returned an Inflect catalog item without an id")
+@@ -155,6 +158,12 @@ def _model_from_item(item: Any, records: Sequence[Any]) -> DiscoveredModel:
+     if source_revision is not None:
+         metadata["source_revision"] = source_revision
+
++    capacity = request_capacity_for(model_id) if item_system == "inflect" else None
++    if capacity is not None and (
++        source_revision is None or source_revision == capacity.source_revision
++    ):
++        metadata["max_input_tokens"] = capacity.maximum
++        metadata["capacity_policy_revision"] = capacity.policy_revision
+     return DiscoveredModel(
+         id=model_id,
+         display_name=str(metadata.get("name") or model_id),
+diff --git a/inflectsynth/request_capacity.py b/inflectsynth/request_capacity.py
+new file mode 100644
+index 0000000..d6acacf
+--- /dev/null
++++ b/inflectsynth/request_capacity.py
+@@ -0,0 +1,289 @@
++"""Strict packaged policy for safe managed Inflect request budgets."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++from collections.abc import Mapping
++from dataclasses import dataclass
++from functools import lru_cache
++from importlib import resources
++from pathlib import Path
++from types import MappingProxyType
++from typing import Any, Literal
++
++_EXPECTED_MODELS = ("nano-v2", "micro-v2")
++_POLICY_CORPUS = "inflectsynth-request-capacity-v1"
++_POLICY_FIELDS = {
++    "corpus",
++    "environment",
++    "evidence_sha256",
++    "generated_with",
++    "models",
++    "provenance",
++    "revision",
++    "runtime_identity",
++    "schema",
++    "unit",
++}
++_RUNTIME_IDENTITY_FIELDS = {
++    "engine",
++    "engine_version",
++    "g2p_revision",
++    "runtime_revision",
++    "request_api_version",
++}
++_PROVENANCE_FIELDS = {"model_id", "model_ref", "source_revision", "artifacts"}
++_MODEL_POLICY_FIELDS = {
++    "maximum",
++    "basis",
++    "corpus",
++    "safe_observation_boundary",
++}
++_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
++
++
++def _freeze_json(value: Any) -> Any:
++    if isinstance(value, Mapping):
++        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
++    if isinstance(value, (list, tuple)):
++        return tuple(_freeze_json(item) for item in value)
++    return value
++
++
++def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"duplicate JSON object key: {key!r}")
++        result[key] = value
++    return result
++
++
++def _reject_constant(value: str) -> None:
++    raise ValueError(f"non-standard JSON numeric constant is not permitted: {value}")
++
++
++def _canonical_sha256(value: Any) -> str:
++    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
++    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
++
++
++def _require_digest(value: Any, name: str) -> str:
++    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
++        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
++    return value
++
++
++def _require_string(value: Any, name: str) -> str:
++    if not isinstance(value, str) or not value.strip():
++        raise ValueError(f"{name} must be a non-empty string")
++    return value
++
++
++def _require_fields(value: Any, fields: set[str], name: str) -> Mapping[str, Any]:
++    if not isinstance(value, Mapping) or set(value) != fields:
++        raise ValueError(f"{name} has an invalid shape")
++    return value
++
++
++def _validate_policy(document: Any) -> RequestCapacityPolicy:
++    root = _require_fields(document, _POLICY_FIELDS, "request-capacity policy")
++    if type(root["schema"]) is not int or root["schema"] != 1:
++        raise ValueError("request-capacity policy schema must be 1")
++    if root["unit"] != "model_tokens":
++        raise ValueError("request-capacity policy unit must be 'model_tokens'")
++    corpus = _require_string(root["corpus"], "policy corpus")
++    if corpus != _POLICY_CORPUS:
++        raise ValueError(f"policy corpus must be {_POLICY_CORPUS!r}")
++
++    revision = _require_digest(root["revision"], "policy revision")
++    expected_revision = _canonical_sha256(
++        {key: value for key, value in root.items() if key != "revision"}
++    )
++    if revision != expected_revision:
++        raise ValueError("policy revision does not match its contents")
++    evidence_sha256 = _require_digest(root["evidence_sha256"], "evidence_sha256")
++
++    generated_with = _require_fields(
++        root["generated_with"], {"inflectsynth", "inflectg2p", "onnxvoice"}, "generated_with"
++    )
++    for name, value in generated_with.items():
++        _require_string(value, f"generated_with.{name}")
++        if value == "unknown":
++            raise ValueError(f"generated_with.{name} must identify a package version")
++
++    environment = _require_fields(
++        root["environment"], {"python_version", "platform"}, "environment"
++    )
++    for name, value in environment.items():
++        _require_string(value, f"environment.{name}")
++
++    runtime_identity = _require_fields(
++        root["runtime_identity"], _RUNTIME_IDENTITY_FIELDS, "runtime_identity"
++    )
++    for name, value in runtime_identity.items():
++        _require_string(value, f"runtime_identity.{name}")
++    if runtime_identity["engine"] != "inflect":
++        raise ValueError("runtime_identity.engine must be 'inflect'")
++
++    provenance = root["provenance"]
++    if not isinstance(provenance, list) or len(provenance) != len(_EXPECTED_MODELS):
++        raise ValueError("provenance must contain one record for each canonical model")
++    provenance_by_model: dict[str, Mapping[str, Any]] = {}
++    for index, raw_record in enumerate(provenance):
++        record = _require_fields(raw_record, _PROVENANCE_FIELDS, f"provenance[{index}]")
++        model_id = record["model_id"]
++        if model_id not in _EXPECTED_MODELS or model_id in provenance_by_model:
++            raise ValueError(f"provenance has a non-canonical or duplicate model ID: {model_id!r}")
++        if record["model_ref"] != f"inflect:{model_id}":
++            raise ValueError(f"provenance model_ref is invalid for {model_id!r}")
++        _require_string(record["source_revision"], f"provenance[{index}].source_revision")
++        artifacts = _require_fields(
++            record["artifacts"], {"duration", "decode"}, f"provenance[{index}].artifacts"
++        )
++        for artifact_name, raw_artifact in artifacts.items():
++            artifact = _require_fields(
++                raw_artifact, {"bytes", "sha256"}, f"provenance[{index}].artifacts.{artifact_name}"
++            )
++            if type(artifact["bytes"]) is not int or artifact["bytes"] <= 0:
++                raise ValueError(f"{artifact_name} artifact bytes must be a positive integer")
++            _require_digest(artifact["sha256"], f"{artifact_name} artifact sha256")
++        provenance_by_model[model_id] = record
++    if set(provenance_by_model) != set(_EXPECTED_MODELS):
++        raise ValueError("provenance must cover exactly nano-v2 and micro-v2")
++
++    raw_models = _require_fields(root["models"], set(_EXPECTED_MODELS), "models")
++    capacities: dict[str, RequestCapacity] = {}
++    for model_id in _EXPECTED_MODELS:
++        raw_model = _require_fields(
++            raw_models[model_id], _MODEL_POLICY_FIELDS, f"models.{model_id}"
++        )
++        maximum = raw_model["maximum"]
++        boundary = raw_model["safe_observation_boundary"]
++        if type(maximum) is not int or maximum <= 0:
++            raise ValueError(f"models.{model_id}.maximum must be a positive integer")
++        if type(boundary) is not int or boundary <= 0:
++            raise ValueError(
++                f"models.{model_id}.safe_observation_boundary must be a positive integer"
++            )
++        if maximum > boundary:
++            raise ValueError(f"models.{model_id}.maximum exceeds its safe observation boundary")
++        if raw_model["basis"] != "validated-safe-request-budget":
++            raise ValueError(f"models.{model_id}.basis is unsupported")
++        if raw_model["corpus"] != corpus:
++            raise ValueError(f"models.{model_id}.corpus does not match the policy corpus")
++        source_record = provenance_by_model[model_id]
++        capacities[model_id] = RequestCapacity(
++            model_id=model_id,
++            maximum=maximum,
++            policy_revision=revision,
++            evidence_sha256=evidence_sha256,
++            basis=raw_model["basis"],
++            safe_observation_boundary=boundary,
++            corpus=corpus,
++            source_revision=source_record["source_revision"],
++            artifacts=source_record["artifacts"],
++        )
++
++    return RequestCapacityPolicy(
++        schema=1,
++        unit="model_tokens",
++        corpus=corpus,
++        revision=revision,
++        evidence_sha256=evidence_sha256,
++        generated_with=generated_with,
++        environment=environment,
++        runtime_identity=runtime_identity,
++        provenance=tuple(provenance),
++        models=capacities,
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class RequestCapacity:
++    """Evidence-backed safe request budget for one canonical managed model."""
++
++    model_id: str
++    maximum: int
++    policy_revision: str
++    evidence_sha256: str
++    basis: str
++    safe_observation_boundary: int
++    corpus: str
++    source_revision: str
++    artifacts: Mapping[str, Any]
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "artifacts", _freeze_json(self.artifacts))
++
++
++@dataclass(frozen=True, slots=True)
++class RequestCapacityPolicy:
++    """Immutable, fully validated packaged managed-model capacity policy."""
++
++    schema: int
++    unit: Literal["model_tokens"]
++    corpus: str
++    revision: str
++    evidence_sha256: str
++    generated_with: Mapping[str, Any]
++    environment: Mapping[str, Any]
++    runtime_identity: Mapping[str, Any]
++    provenance: tuple[Mapping[str, Any], ...]
++    models: Mapping[str, RequestCapacity]
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "generated_with", _freeze_json(self.generated_with))
++        object.__setattr__(self, "environment", _freeze_json(self.environment))
++        object.__setattr__(self, "runtime_identity", _freeze_json(self.runtime_identity))
++        object.__setattr__(self, "provenance", _freeze_json(self.provenance))
++        object.__setattr__(self, "models", MappingProxyType(dict(self.models)))
++
++    def for_model(self, model_id: str) -> RequestCapacity | None:
++        """Return a capacity only for an exact canonical model ID."""
++        return self.models.get(model_id)
++
++
++def load_request_capacity_policy(source: str | Path | None = None) -> RequestCapacityPolicy:
++    """Load and validate a policy file, or the packaged policy when source is omitted."""
++    try:
++        if source is None:
++            text = (
++                resources.files("inflectsynth")
++                .joinpath("data")
++                .joinpath("request_capacity.json")
++                .read_text(encoding="utf-8")
++            )
++        else:
++            text = Path(source).read_text(encoding="utf-8")
++    except OSError as error:
++        raise ValueError(f"cannot read request-capacity policy: {error}") from error
++    try:
++        document = json.loads(text, object_pairs_hook=_json_pairs, parse_constant=_reject_constant)
++    except (json.JSONDecodeError, ValueError) as error:
++        raise ValueError(f"invalid request-capacity policy JSON: {error}") from error
++    return _validate_policy(document)
++
++
++@lru_cache(maxsize=1)
++def default_request_capacity_policy() -> RequestCapacityPolicy:
++    """Return the cached, validated packaged policy."""
++    return load_request_capacity_policy()
++
++
++def request_capacity_for(model_id: str) -> RequestCapacity | None:
++    """Look up a policy entry by exact canonical managed model ID."""
++    if not isinstance(model_id, str):
++        return None
++    return default_request_capacity_policy().for_model(model_id)
++
++
++__all__ = [
++    "RequestCapacity",
++    "RequestCapacityPolicy",
++    "default_request_capacity_policy",
++    "load_request_capacity_policy",
++    "request_capacity_for",
++]
+diff --git a/inflectsynth/types.py b/inflectsynth/types.py
+index 2e45ccb..38632f3 100644
+--- a/inflectsynth/types.py
++++ b/inflectsynth/types.py
+@@ -68,6 +68,16 @@ class RequestMeasure:
+         elif self.fits != (self.amount <= self.maximum):
+             raise ValueError("fits must match amount <= maximum")
+
++    @property
++    def token_count(self) -> int:
++        """Compatibility alias for the exact model-token amount."""
++        return self.amount
++
++    @property
++    def max_tokens(self) -> int | None:
++        """Compatibility alias for the supported request maximum."""
++        return self.maximum
++
+
+ @dataclass(frozen=True, slots=True)
+ class SynthesisResult:
+diff --git a/inflectsynth/voice.py b/inflectsynth/voice.py
+index 6bddf79..82bed36 100644
+--- a/inflectsynth/voice.py
++++ b/inflectsynth/voice.py
+@@ -27,6 +27,7 @@ from .errors import (
+     SynthesisInputTooLongError,
+     TextPreparationError,
+ )
++from .request_capacity import request_capacity_for
+ from .types import RequestMeasure, SynthesisResult, VoiceInfo
+ from .voice_level import (
+     VoiceCalibrationKey,
+@@ -83,8 +84,20 @@ class InflectVoice:
+             raise TextPreparationError("InflectG2P failed to phonemize prepared text") from exc
+
+     def _maximum_input_tokens(self) -> int | None:
+-        """Return a validated model budget, or None when capacity is unknown."""
+-        return None
++        """Return a matching managed policy budget, or None when capacity is unknown."""
++        if self.model_ref != f"inflect:{self.model_id}":
++            return None
++        capacity = request_capacity_for(self.model_id)
++        if capacity is None:
++            return None
++        upstream = self.metadata.get("upstream")
++        upstream = upstream if isinstance(upstream, Mapping) else {}
++        source_revision = self.metadata.get("source_revision")
++        if source_revision is None:
++            source_revision = upstream.get("source_revision") or upstream.get("revision")
++        if source_revision is not None and source_revision != capacity.source_revision:
++            return None
++        return capacity.maximum
+
+     def measure_prepared(self, text: str) -> RequestMeasure:
+         """Measure the exact model tokens produced for one prepared request."""
+diff --git a/tests/test_discovery.py b/tests/test_discovery.py
+index 7620794..d2a2dff 100644
+--- a/tests/test_discovery.py
++++ b/tests/test_discovery.py
+@@ -1,7 +1,9 @@
+ from __future__ import annotations
+
++import operator
++from collections.abc import MutableMapping
+ from types import SimpleNamespace
+-from typing import Any
++from typing import Any, cast
+
+ import pytest
+
+@@ -9,6 +11,12 @@ import inflectsynth.discovery as discovery
+ from inflectsynth import CatalogDiscoveryError, CatalogUnavailableError, discover_models
+
+
++def _policy_source_revision(model_id: str) -> str:
++    capacity = discovery.request_capacity_for(model_id)
++    assert capacity is not None
++    return capacity.source_revision
++
++
+ def _records() -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+     items = tuple(
+         SimpleNamespace(
+@@ -22,7 +30,9 @@ def _records() -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+                 "name": name,
+                 "version": "2",
+                 "language": "en-US",
+-                "source_revision": f"source-{model_id}",
++                "source_revision": _policy_source_revision(model_id),
++                "max_input_tokens": 9999,
++                "capacity_policy_revision": "mocked-onnxvoice-capacity",
+                 "controls": {"variation": {"default": 0.667}},
+                 "runtime": {"profile": "inflect-v2-split-v1"},
+                 "voice_details": {
+@@ -88,8 +98,14 @@ def test_discovery_maps_models_voices_and_controls_without_installing(
+     assert models[0].aliases == ("nano",)
+     assert models[0].sample_rate == 24_000
+     assert models[0].default_voice == "default"
+-    assert models[0].source_revision == "source-nano-v2"
++    assert models[0].source_revision == _policy_source_revision("nano-v2")
+     assert models[0].metadata["controls"]["variation"]["default"] == 0.667
++    for model in models:
++        capacity = discovery.request_capacity_for(model.id)
++        assert capacity is not None
++        assert model.metadata["max_input_tokens"] == capacity.maximum
++        assert model.metadata["capacity_policy_revision"] == capacity.policy_revision
++        assert model.metadata["max_input_tokens"] != 9999
+     assert models[0].voices == (
+         discovery.DescribedVoice(
+             id="default",
+@@ -109,9 +125,13 @@ def test_discovery_maps_models_voices_and_controls_without_installing(
+     }
+     assert calls == [("items", expected), ("voices", expected)]
+     with pytest.raises(TypeError):
+-        models[0].metadata["changed"] = True  # type: ignore[index]
++        operator.setitem(cast(MutableMapping[str, Any], models[0].metadata), "changed", True)
+     with pytest.raises(TypeError):
+-        models[0].metadata["controls"]["variation"]["default"] = 0.5  # type: ignore[index]
++        operator.setitem(
++            cast(MutableMapping[str, Any], models[0].metadata["controls"]["variation"]),
++            "default",
++            0.5,
++        )
+
+
+ def test_catalog_errors_are_translated_to_public_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+diff --git a/tests/test_promote_request_capacity.py b/tests/test_promote_request_capacity.py
+index 6837814..3352d95 100644
+--- a/tests/test_promote_request_capacity.py
++++ b/tests/test_promote_request_capacity.py
+@@ -97,11 +97,12 @@ def test_candidate_rejects_incomplete_failed_or_noncanonical_evidence() -> None:
+         promoter.build_candidate(noncanonical, {"nano-v2": 100, "micro-v2": 100})
+
+
+-def test_unsupported_android_runtime_cannot_promote_capacity() -> None:
++def test_complete_android_onnx_evidence_can_be_promoted() -> None:
+     report = _complete_report()
+     report["environment"]["platform"] = "Android-16-aarch64-64bit-ELF"
+-    with pytest.raises(ValueError, match="unsupported Android runtime"):
+-        promoter.build_candidate(report, {"nano-v2": 100, "micro-v2": 100})
++    candidate = promoter.build_candidate(report, {"nano-v2": 100, "micro-v2": 100})
++    assert candidate["models"]["nano-v2"]["maximum"] == 100
++    assert candidate["models"]["micro-v2"]["maximum"] == 100
+
+
+ def test_candidate_maximum_must_be_positive_and_within_each_safe_boundary() -> None:
+diff --git a/tests/test_request_api_contract.py b/tests/test_request_api_contract.py
+index 47af7c4..0529477 100644
+--- a/tests/test_request_api_contract.py
++++ b/tests/test_request_api_contract.py
+@@ -22,6 +22,9 @@ def test_request_api_contract_is_exact_immutable_and_side_effect_free(
+     assert isinstance(contract, Mapping)
+     assert contract == {
+         "entrypoint": "InflectVoice.synthesize_prepared",
++        "supports_request_measurement": True,
++        "measurement_entrypoint": "InflectVoice.measure_prepared",
++        "measurement_metric": "model_tokens",
+         "supports_linguistic_tokens": False,
+         "supports_pronunciation_overrides": False,
+         "supports_whole_request_phonemes": False,
+@@ -48,7 +51,8 @@ def test_capacity_api_contract_is_additive_and_dependency_light(
+     assert contract == {
+         "entrypoint": "InflectVoice.measure_prepared",
+         "unit": "model_tokens",
+-        "supports_known_maximum": False,
++        "supports_known_maximum": True,
++        "policy_revision": inflectsynth.default_request_capacity_policy().revision,
+         "caller_owns_text_boundaries": True,
+     }
+     with pytest.raises(TypeError):
+diff --git a/tests/test_request_capacity_policy.py b/tests/test_request_capacity_policy.py
+new file mode 100644
+index 0000000..2d8972a
+--- /dev/null
++++ b/tests/test_request_capacity_policy.py
+@@ -0,0 +1,144 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import operator
++from collections.abc import MutableMapping
++from copy import deepcopy
++from importlib import resources
++from pathlib import Path
++from typing import Any, cast
++
++import pytest
++
++from inflectsynth.request_capacity import (
++    RequestCapacity,
++    RequestCapacityPolicy,
++    default_request_capacity_policy,
++    load_request_capacity_policy,
++    request_capacity_for,
++)
++
++
++def _packaged_document() -> dict[str, Any]:
++    text = (
++        resources.files("inflectsynth")
++        .joinpath("data")
++        .joinpath("request_capacity.json")
++        .read_text(encoding="utf-8")
++    )
++    return json.loads(text)
++
++
++def _write_document(tmp_path: Path, document: dict[str, Any]) -> Path:
++    result = deepcopy(document)
++    revision_payload = {key: value for key, value in result.items() if key != "revision"}
++    encoded = json.dumps(revision_payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
++    result["revision"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
++    path = tmp_path / "request_capacity.json"
++    path.write_text(json.dumps(result), encoding="utf-8")
++    return path
++
++
++def test_packaged_policy_loads_and_resolves_only_exact_canonical_ids() -> None:
++    policy = default_request_capacity_policy()
++
++    assert isinstance(policy, RequestCapacityPolicy)
++    assert set(policy.models) == {"nano-v2", "micro-v2"}
++    assert policy.unit == "model_tokens"
++    assert policy.revision
++    assert policy.for_model("nano-v2") == request_capacity_for("nano-v2")
++    assert request_capacity_for("nano") is None
++    assert request_capacity_for("other-v2") is None
++    assert request_capacity_for("Nano-v2") is None
++
++    for model_id in ("nano-v2", "micro-v2"):
++        capacity = request_capacity_for(model_id)
++        assert isinstance(capacity, RequestCapacity)
++        assert capacity.model_id == model_id
++        assert type(capacity.maximum) is int and capacity.maximum > 0
++        assert capacity.maximum <= capacity.safe_observation_boundary
++        assert capacity.source_revision
++        assert capacity.evidence_sha256 == policy.evidence_sha256
++
++
++def test_returned_policy_and_nested_provenance_are_immutable() -> None:
++    policy = load_request_capacity_policy()
++    capacity = policy.models["nano-v2"]
++
++    with pytest.raises(TypeError):
++        operator.setitem(
++            cast(MutableMapping[str, RequestCapacity], policy.models), "nano-v2", capacity
++        )
++    with pytest.raises(TypeError):
++        operator.setitem(cast(MutableMapping[str, Any], capacity.artifacts["duration"]), "bytes", 1)
++    with pytest.raises(TypeError):
++        operator.setitem(
++            cast(MutableMapping[str, Any], policy.provenance[0]), "source_revision", "changed"
++        )
++
++
++def test_policy_rejects_malformed_schema_and_unknown_model_ids(tmp_path: Path) -> None:
++    document = _packaged_document()
++    document["schema"] = True
++    with pytest.raises(ValueError, match="schema must be 1"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
++
++    document = _packaged_document()
++    document["models"]["unmanaged"] = document["models"].pop("nano-v2")
++    with pytest.raises(ValueError, match="models has an invalid shape"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
++
++
++def test_policy_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
++    path = tmp_path / "duplicate.json"
++    path.write_text('{"schema":1,"schema":1}', encoding="utf-8")
++
++    with pytest.raises(ValueError, match="duplicate JSON object key"):
++        load_request_capacity_policy(path)
++
++
++@pytest.mark.parametrize("maximum", [0, -1, True])
++def test_policy_rejects_non_positive_or_boolean_maximum(
++    tmp_path: Path, maximum: int | bool
++) -> None:
++    document = _packaged_document()
++    document["models"]["nano-v2"]["maximum"] = maximum
++
++    with pytest.raises(ValueError, match="maximum must be a positive integer"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
++
++
++def test_policy_rejects_empty_invalid_or_stale_revision(tmp_path: Path) -> None:
++    document = _packaged_document()
++    document["revision"] = ""
++    path = tmp_path / "empty-revision.json"
++    path.write_text(json.dumps(document), encoding="utf-8")
++    with pytest.raises(ValueError, match="policy revision must be a lowercase SHA-256 digest"):
++        load_request_capacity_policy(path)
++
++    document = _packaged_document()
++    document["models"]["nano-v2"]["maximum"] -= 1
++    path = tmp_path / "stale-revision.json"
++    path.write_text(json.dumps(document), encoding="utf-8")
++    with pytest.raises(ValueError, match="revision does not match its contents"):
++        load_request_capacity_policy(path)
++
++
++def test_policy_rejects_malformed_provenance_and_observation_boundary(tmp_path: Path) -> None:
++    document = _packaged_document()
++    document["provenance"][0]["source_revision"] = ""
++    with pytest.raises(ValueError, match="source_revision must be a non-empty string"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
++
++    document = _packaged_document()
++    document["models"]["nano-v2"]["safe_observation_boundary"] = True
++    with pytest.raises(ValueError, match="safe_observation_boundary must be a positive integer"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
++
++    document = _packaged_document()
++    document["models"]["nano-v2"]["maximum"] = (
++        document["models"]["nano-v2"]["safe_observation_boundary"] + 1
++    )
++    with pytest.raises(ValueError, match="exceeds its safe observation boundary"):
++        load_request_capacity_policy(_write_document(tmp_path, document))
+diff --git a/tests/test_request_measurement.py b/tests/test_request_measurement.py
+index ad811ea..29e83db 100644
+--- a/tests/test_request_measurement.py
++++ b/tests/test_request_measurement.py
+@@ -45,11 +45,14 @@ class FakeRuntime:
+
+
+ def make_voice(
+-    *, managed: bool = True, token_ids: tuple[int, ...] = (4, 5, 6)
++    *,
++    managed: bool = True,
++    token_ids: tuple[int, ...] = (4, 5, 6),
++    model_id_override: str | None = None,
+ ) -> tuple[InflectVoice, FakeRuntime, FakeG2P]:
+     runtime = FakeRuntime()
+     g2p = FakeG2P(token_ids)
+-    model_id = "nano-v2" if managed else "local-model"
++    model_id = model_id_override or ("nano-v2" if managed else "local-model")
+     installed = ResolvedInflectModel(
+         ref=f"inflect:{model_id}" if managed else None,
+         model_id=model_id,
+@@ -73,8 +76,10 @@ def test_measurement_uses_exact_input_and_never_runs_acoustic_inference() -> Non
+     measure = voice.measure_prepared(text)
+
+     assert g2p.calls == [text]
+-    assert measure == RequestMeasure(fits=None, amount=3, maximum=None, model_id="nano-v2")
++    assert measure == RequestMeasure(fits=True, amount=3, maximum=400, model_id="nano-v2")
+     assert measure.unit == "model_tokens"
++    assert measure.token_count == measure.amount == 3
++    assert measure.max_tokens == measure.maximum == 400
+     assert runtime.calls == []
+     assert voice.last_voice_level_application is previous_application
+
+@@ -91,17 +96,52 @@ def test_measurement_and_synthesis_report_the_same_frontend_token_count() -> Non
+     assert runtime.calls == [(12, 9, 2, 7)]
+
+
+-def test_known_capacity_reports_fit_and_local_models_default_to_unknown(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
++def test_managed_capacity_matches_policy_and_local_models_stay_unknown() -> None:
+     managed, _, _ = make_voice(token_ids=(1, 2, 3))
+-    monkeypatch.setattr(managed, "_maximum_input_tokens", lambda: 3)
+-    assert managed.measure_prepared("fits").fits is True
++    measurement = managed.measure_prepared("fits")
++    assert measurement.maximum == 400
++    assert measurement.fits is True
+
+     local, _, _ = make_voice(managed=False)
+-    measurement = local.measure_prepared("unknown")
+-    assert measurement.maximum is None
+-    assert measurement.fits is None
++    local_measurement = local.measure_prepared("unknown")
++    assert local_measurement.maximum is None
++    assert local_measurement.fits is None
++
++    local_spoof, _, _ = make_voice(managed=False, model_id_override="nano-v2")
++    spoof_measurement = local_spoof.measure_prepared("must remain unknown")
++    assert spoof_measurement.maximum is None
++    assert spoof_measurement.fits is None
++
++
++def test_exact_policy_limit_fits_and_over_limit_fails_before_inference() -> None:
++    exact, exact_runtime, _ = make_voice(token_ids=tuple(range(400)))
++    exact_measure = exact.measure_prepared("exactly at limit")
++    assert exact_measure.amount == exact_measure.maximum == 400
++    assert exact_measure.fits is True
++    result = exact.synthesize_prepared("exactly at limit")
++    assert result.metadata["token_count"] == exact_measure.amount
++    assert exact_runtime.calls == [tuple(range(400))]
++
++    over, over_runtime, _ = make_voice(token_ids=tuple(range(401)))
++    over_measure = over.measure_prepared("over limit")
++    assert over_measure.amount == 401
++    assert over_measure.maximum == 400
++    assert over_measure.fits is False
++    with pytest.raises(SynthesisInputTooLongError) as caught:
++        over.synthesize_prepared("over limit")
++    assert caught.value.token_count == 401
++    assert caught.value.max_tokens == 400
++    assert over_runtime.calls == []
++
++
++def test_stale_managed_model_revision_does_not_inherit_policy_capacity() -> None:
++    voice, _, _ = make_voice()
++    voice.metadata["source_revision"] = "stale-model-revision"
++
++    measure = voice.measure_prepared("unknown due to stale policy provenance")
++
++    assert measure.maximum is None
++    assert measure.fits is None
+
+
+ def test_synthesis_rejects_over_budget_before_inference_with_stable_attributes(
+@@ -190,6 +230,11 @@ def test_public_capacity_symbols_are_exported() -> None:
+         "DEFAULT_VOICE",
+         "SAMPLE_RATE",
+         "RequestMeasure",
++        "RequestCapacity",
++        "RequestCapacityPolicy",
++        "default_request_capacity_policy",
++        "load_request_capacity_policy",
++        "request_capacity_for",
+         "CAPACITY_API_VERSION",
+         "capacity_api_contract",
+         "TextPreparationError",

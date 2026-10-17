@@ -1,0 +1,54 @@
+{
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "additions": 654,
+      "deletions": 27,
+      "patch_file": "a61b507.patch",
+      "patch_sha256": "42505fd7a8f4560de781077932f281102287cc208c3b273dc810bc26da203c9f",
+      "paths": [
+        "README.md",
+        "benchmarks/promote_request_capacity.py",
+        "docs/changelog.md",
+        "inflectsynth/__init__.py",
+        "inflectsynth/api_contract.py",
+        "inflectsynth/data/request_capacity.json",
+        "inflectsynth/discovery.py",
+        "inflectsynth/request_capacity.py",
+        "inflectsynth/types.py",
+        "inflectsynth/voice.py",
+        "tests/test_discovery.py",
+        "tests/test_promote_request_capacity.py",
+        "tests/test_request_api_contract.py",
+        "tests/test_request_capacity_policy.py",
+        "tests/test_request_measurement.py"
+      ],
+      "sha": "a61b507ae2b7bd796dcda9ff42350ca9a174693a",
+      "short_sha": "a61b507",
+      "source_ref": "git:a61b507ae2b7bd796dcda9ff42350ca9a174693a"
+    },
+    {
+      "additions": 247,
+      "deletions": 8,
+      "patch_file": "0a7ecb2.patch",
+      "patch_sha256": "25d43a32944b0edc05b62dd4a0ea84e053d5a45e93551e95fea6e6c673ae3e82",
+      "paths": [
+        "pyproject.toml",
+        "tests/fixtures/inflect_nano_catalog.json",
+        "tests/test_dependency_boundary.py",
+        "tests/test_managed_model_install.py"
+      ],
+      "sha": "0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735",
+      "short_sha": "0a7ecb2",
+      "source_ref": "git:0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735"
+    }
+  ],
+  "git_base_ref": "ddb47019ba334ab8a453201984d0916cf67ef3dc",
+  "git_base_sha": "ddb47019ba334ab8a453201984d0916cf67ef3dc",
+  "git_head_ref": "0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735",
+  "git_head_sha": "0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735",
+  "include_merges": "nontrivial",
+  "object_type": "git_evidence_manifest",
+  "release_version": "v0.1.2",
+  "schema_version": 1
+}

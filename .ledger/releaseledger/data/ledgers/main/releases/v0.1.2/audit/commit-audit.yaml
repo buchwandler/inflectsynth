@@ -1,0 +1,89 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 3
+release_version: v0.1.2
+git_base_ref: v0.1.1
+git_base_sha: ddb47019ba334ab8a453201984d0916cf67ef3dc
+git_head_ref: HEAD
+git_head_sha: 0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+git_range: ddb47019ba334ab8a453201984d0916cf67ef3dc..0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+commit_count: 2
+rows:
+  - sha: a61b507ae2b7bd796dcda9ff42350ca9a174693a
+    source_ref: git:a61b507ae2b7bd796dcda9ff42350ca9a174693a
+    short_sha: a61b507
+    changed_paths:
+      - README.md
+      - benchmarks/promote_request_capacity.py
+      - docs/changelog.md
+      - inflectsynth/__init__.py
+      - inflectsynth/api_contract.py
+      - inflectsynth/data/request_capacity.json
+      - inflectsynth/discovery.py
+      - inflectsynth/request_capacity.py
+      - inflectsynth/types.py
+      - inflectsynth/voice.py
+      - tests/test_discovery.py
+      - tests/test_promote_request_capacity.py
+      - tests/test_request_api_contract.py
+      - tests/test_request_capacity_policy.py
+      - tests/test_request_measurement.py
+    stats:
+      files_changed: 15
+      insertions: 654
+      deletions: 27
+    inspected: true
+    inspected_paths:
+      - README.md
+      - benchmarks/promote_request_capacity.py
+      - docs/changelog.md
+      - inflectsynth/__init__.py
+      - inflectsynth/api_contract.py
+      - inflectsynth/data/request_capacity.json
+      - inflectsynth/discovery.py
+      - inflectsynth/request_capacity.py
+      - inflectsynth/types.py
+      - inflectsynth/voice.py
+      - tests/test_discovery.py
+      - tests/test_promote_request_capacity.py
+      - tests/test_request_api_contract.py
+      - tests/test_request_capacity_policy.py
+      - tests/test_request_measurement.py
+    observed_behavior:
+      Managed canonical Nano v2 and Micro v2 models now expose validated
+      400-token safe request budgets, while local and unmanaged models remain unknown-capacity.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: fix measure api"
+    target_entry_id: entry-0001
+    notes: ""
+  - sha: 0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+    source_ref: git:0a7ecb2bd60cad4a1d76853a9d608b4e68d8c735
+    short_sha: 0a7ecb2
+    changed_paths:
+      - pyproject.toml
+      - tests/fixtures/inflect_nano_catalog.json
+      - tests/test_dependency_boundary.py
+      - tests/test_managed_model_install.py
+    stats:
+      files_changed: 4
+      insertions: 247
+      deletions: 8
+    inspected: true
+    inspected_paths:
+      - pyproject.toml
+      - tests/fixtures/inflect_nano_catalog.json
+      - tests/test_dependency_boundary.py
+      - tests/test_managed_model_install.py
+    observed_behavior:
+      Managed Inflect model installation now resolves pinned Hugging
+      Face assets and declares the Hugging Face transport dependency.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: increase onnxversion"
+    target_entry_id: entry-0002
+    notes: ""

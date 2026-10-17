@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -59,6 +60,22 @@ def test_built_wheel_metadata_installs_huggingface_transport(tmp_path) -> None:
 
     from packaging.requirements import Requirement
 
+    project = tmp_path / "project"
+    shutil.copytree(
+        ROOT,
+        project,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            "build",
+            "dist",
+            "*.egg-info",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+        ),
+    )
+
     subprocess.run(
         [
             sys.executable,
@@ -69,7 +86,7 @@ def test_built_wheel_metadata_installs_huggingface_transport(tmp_path) -> None:
             "--outdir",
             str(tmp_path),
         ],
-        cwd=ROOT,
+        cwd=project,
         check=True,
         capture_output=True,
         text=True,
