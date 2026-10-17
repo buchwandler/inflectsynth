@@ -18,7 +18,7 @@ keywords = ["tts", "inflect", "onnx", "onnxruntime", "speech"]
 dependencies = [
   "numpy>=1.26,<3",
   "inflectg2p>=0.1.0,<0.2",
-  "onnxvoice>=0.2.5,<0.3",
+  "onnxvoice[huggingface]>=0.2.10,<0.3",
   "audiosig>=0.1.4,<0.2",
 ]
 classifiers = [
@@ -33,9 +33,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-cpu = ["onnxvoice[cpu]>=0.2.5,<0.3"]
-gpu = ["onnxvoice[gpu]>=0.2.5,<0.3"]
-directml = ["onnxvoice[directml]>=0.2.5,<0.3"]
+cpu = ["onnxvoice[cpu]>=0.2.10,<0.3"]
+gpu = ["onnxvoice[gpu]>=0.2.10,<0.3"]
+directml = ["onnxvoice[directml]>=0.2.10,<0.3"]
 dev = [
   "pytest>=8",
   "ruff>=0.16,<0.17",
